@@ -1134,16 +1134,24 @@ function buildRibbonPath(firstEdge, secondEdge) {
     ` L${roundForSvg(backEdge[0][0])},${roundForSvg(backEdge[0][1])}${smoothCurveThrough(backEdge)} Z`;
 }
 
-// A drawing in progress: its shapes, gradient definitions and the planet's random numbers.
+// A drawing in progress: its shapes, gradient definitions, the planet's random
+// numbers, and the top edge of every layer of land drawn so far (landTops), so
+// that later things can stand on it.
 function createArtCanvas(random, idPrefix) {
   const canvas = {
-    random, idPrefix, shapes: [], definitions: [], gradientCount: 0,
+    random, idPrefix, shapes: [], definitions: [], gradientCount: 0, landTops: [],
     between: (low, high) => randomBetween(random, low, high),
     chance: probability => random() < probability,
     pick: list => list[Math.floor(random() * list.length)],
     add: (...nodes) => { for (const node of nodes) if (node) canvas.shapes.push(node); },
   };
   return canvas;
+}
+
+// The highest point of the land drawn so far at x, or -Infinity before any land.
+function landTopAt(canvas, x) {
+  if (!canvas.landTops.length) return -Infinity;
+  return Math.min(...canvas.landTops.map(heightAt => heightAt(x)));
 }
 
 // Registers a vertical (or radial) gradient and returns its url(#…) fill.
@@ -1164,12 +1172,14 @@ function artGroup(kind, children) {
 }
 
 // Positions for scattered things, far (small, high up) to near (big, low down),
-// in drawing order so nearer things cover farther ones. depth runs 0…1.
+// in drawing order so nearer things cover farther ones. depth runs 0…1. A spot
+// above the land drawn so far moves down onto it, so nothing stands on thin air.
 function scatterByDepth(canvas, count, { minY, maxY, minX = -10, maxX = BIOME_ART_WIDTH + 10 }) {
   const positions = [];
   for (let item = 0; item < count; item++) {
-    const y = canvas.between(minY, maxY);
-    positions.push({ x: canvas.between(minX, maxX), y, depth: maxY > minY ? (y - minY) / (maxY - minY) : 1 });
+    const x = canvas.between(minX, maxX);
+    const y = Math.max(canvas.between(minY, maxY), landTopAt(canvas, x) + 1);
+    positions.push({ x, y, depth: maxY > minY ? Math.min(1, (y - minY) / (maxY - minY)) : 1 });
   }
   return positions.sort((first, second) => first.y - second.y);
 }
@@ -1266,28 +1276,60 @@ function paintSkyPlanet(canvas, { colour, shade }) {
 
 // ── Land ──
 
-// The outline of rolling hills, closed along the bottom edge. Jaggedness adds
-// rough peaks; flatTops makes stepped mesas.
-function buildRidgePath(random, { baseY, amplitude, jaggedness = 0, flatTops = false }) {
+// A rolling ridge: the outline of a band of hills closed along the bottom edge,
+// and the height of its crest at any x. Jaggedness adds rough peaks; flatTops
+// makes stepped mesas.
+function buildRidge(random, { baseY, amplitude, jaggedness = 0, flatTops = false }) {
   const waves = [1, 2, 3].map(() => ({ frequency: randomBetween(random, 0.006, 0.03), phase: randomBetween(random, 0, Math.PI * 2) }));
-  const points = [];
+  const heights = [];
   for (let x = 0; x <= BIOME_ART_WIDTH; x += 10) {
     let offset = waves.reduce((total, wave) => total + Math.sin(x * wave.frequency + wave.phase), 0) / waves.length;
     offset += jaggedness * (random() - 0.5);
     let y = baseY - offset * amplitude;
     if (flatTops) y = Math.round(y / 14) * 14;
-    points.push(`${x},${roundForSvg(Math.max(4, Math.min(BIOME_ART_HEIGHT, y)))}`);
+    heights.push(roundForSvg(Math.max(4, Math.min(BIOME_ART_HEIGHT, y))));
   }
-  return `M0,${BIOME_ART_HEIGHT} L${points.join(' L')} L${BIOME_ART_WIDTH},${BIOME_ART_HEIGHT} Z`;
+  const points = heights.map((y, step) => `${step * 10},${y}`);
+  return {
+    path: `M0,${BIOME_ART_HEIGHT} L${points.join(' L')} L${BIOME_ART_WIDTH},${BIOME_ART_HEIGHT} Z`,
+    heightAt: x => {
+      const position = Math.max(0, Math.min(heights.length - 1, x / 10));
+      const left = Math.floor(position);
+      const right = Math.min(heights.length - 1, left + 1);
+      return heights[left] + (heights[right] - heights[left]) * (position - left);
+    },
+  };
 }
 
-// A band of hills in one colour.
+// A band of hills in one colour, reaching down to the bottom edge. Returns the
+// height of its crest at any x; things painted after it can stand on it.
 function paintHills(canvas, colour, shape, kind = 'hills') {
-  canvas.add(createSvgElement('path', { class: `art-${kind}`, d: buildRidgePath(canvas.random, shape), fill: colour }));
+  const ridge = buildRidge(canvas.random, shape);
+  canvas.landTops.push(ridge.heightAt);
+  canvas.add(createSvgElement('path', { class: `art-${kind}`, d: ridge.path, fill: colour }));
+  return ridge.heightAt;
+}
+
+// Where the line from one point through another meets the bottom edge. Slopes
+// are carried on down this way, so a mountain never ends in mid-air above
+// lower land; the land in front hides the rest.
+function continueToBottom([fromX, fromY], [throughX, throughY]) {
+  const run = (throughX - fromX) / Math.max(0.01, throughY - fromY);
+  return [throughX + run * (BIOME_ART_HEIGHT - throughY), BIOME_ART_HEIGHT];
+}
+
+// The point a share of the way from one point to another.
+function pointAlong([fromX, fromY], [toX, toY], share) {
+  return [fromX + (toX - fromX) * share, fromY + (toY - fromY) * share];
+}
+
+// A closed outline through the given points.
+function buildOutlinePath(points) {
+  return `M${points.map(([x, y]) => `${roundForSvg(x)},${roundForSvg(y)}`).join(' L')} Z`;
 }
 
 // A mountain range of separate peaks, each with a sunlit and a shaded face,
-// optionally snow-capped.
+// optionally snow-capped. Their slopes run on to the bottom edge.
 function paintPeaks(canvas, { colour, baseY, minHeight, maxHeight, count = 6, snow = null, sharpness = 0.5 }) {
   const shade = mixColours(colour, '#000000', 0.22);
   const peaks = [];
@@ -1297,13 +1339,24 @@ function paintPeaks(canvas, { colour, baseY, minHeight, maxHeight, count = 6, sn
     const halfWidth = height * canvas.between(1.1, 2.2) * (1.2 - sharpness);
     const topY = baseY - height;
     const shoulder = canvas.between(-0.25, 0.25) * halfWidth;
-    peaks.push(createSvgElement('path', { fill: colour,
-      d: `M${roundForSvg(x - halfWidth)},${baseY} L${roundForSvg(x + shoulder - halfWidth * 0.3)},${roundForSvg(topY + height * 0.35)} L${roundForSvg(x)},${roundForSvg(topY)} L${roundForSvg(x + halfWidth * 0.35)},${roundForSvg(topY + height * 0.3)} L${roundForSvg(x + halfWidth)},${baseY} Z` }));
-    peaks.push(createSvgElement('path', { fill: shade,
-      d: `M${roundForSvg(x)},${roundForSvg(topY)} L${roundForSvg(x + halfWidth * 0.35)},${roundForSvg(topY + height * 0.3)} L${roundForSvg(x + halfWidth)},${baseY} L${roundForSvg(x + halfWidth * 0.12)},${baseY} Z` }));
+    const summit = [x, topY];
+    const leftShoulder = [x + shoulder - halfWidth * 0.3, topY + height * 0.35];
+    const rightShoulder = [x + halfWidth * 0.35, topY + height * 0.3];
+    const leftFoot = [x - halfWidth, baseY];
+    const rightFoot = [x + halfWidth, baseY];
+    const shadeFoot = [x + halfWidth * 0.12, baseY];
+    peaks.push(createSvgElement('path', { fill: colour, d: buildOutlinePath([continueToBottom(leftShoulder, leftFoot), leftFoot, leftShoulder,
+      summit, rightShoulder, rightFoot, continueToBottom(rightShoulder, rightFoot)]) }));
+    peaks.push(createSvgElement('path', { fill: shade, d: buildOutlinePath([summit, rightShoulder, rightFoot,
+      continueToBottom(rightShoulder, rightFoot), continueToBottom(summit, shadeFoot), shadeFoot]) }));
     if (snow) {
-      peaks.push(createSvgElement('path', { fill: snow,
-        d: `M${roundForSvg(x - halfWidth * 0.22)},${roundForSvg(topY + height * 0.2)} L${roundForSvg(x)},${roundForSvg(topY)} L${roundForSvg(x + halfWidth * 0.2)},${roundForSvg(topY + height * 0.18)} L${roundForSvg(x + halfWidth * 0.05)},${roundForSvg(topY + height * 0.26)} Z` }));
+      // The cap's corners lie on the peak's own edges, so no snow hangs beside a steep peak.
+      const snowLeft = pointAlong(summit, leftShoulder, 0.55);
+      const snowRight = pointAlong(summit, rightShoulder, 0.6);
+      const [dipX, dipY] = pointAlong(snowLeft, snowRight, 0.35);
+      const [bumpX, bumpY] = pointAlong(snowLeft, snowRight, 0.7);
+      peaks.push(createSvgElement('path', { class: 'art-snow-cap', fill: snow,
+        d: buildOutlinePath([summit, snowRight, [bumpX, bumpY - height * 0.02], [dipX, dipY + height * 0.06], snowLeft]) }));
     }
   }
   canvas.add(artGroup('peaks', peaks));
@@ -1311,19 +1364,22 @@ function paintPeaks(canvas, { colour, baseY, minHeight, maxHeight, count = 6, sn
 
 // The ground from a height down to the bottom edge, darker towards the viewer.
 function paintGround(canvas, { y, top, bottom }) {
+  canvas.landTops.push(() => y);
   canvas.add(createSvgElement('rect', { class: 'art-ground', x: 0, y, width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT - y,
     fill: addArtGradient(canvas, [['0%', top], ['100%', bottom]]) }));
 }
 
-// A band of sea or lake on the horizon, with a few glints.
+// Sea or lake from the horizon down to the bottom edge (the land in front hides
+// the rest), with a few glints near the horizon.
 function paintWater(canvas, { y, height, colour, glint = '#ffffff' }) {
   let glints = '';
   for (let line = 0; line < 6; line++) {
     const x = canvas.between(0, BIOME_ART_WIDTH - 40);
     glints += `M${roundForSvg(x)},${roundForSvg(y + canvas.between(1, height - 1))}h${roundForSvg(canvas.between(10, 40))}`;
   }
+  canvas.landTops.push(() => y);
   canvas.add(artGroup('water', [
-    createSvgElement('rect', { x: 0, y, width: BIOME_ART_WIDTH, height, fill: colour }),
+    createSvgElement('rect', { x: 0, y, width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT - y, fill: colour }),
     createSvgElement('path', { d: glints, stroke: glint, 'stroke-width': 0.8, opacity: 0.3 }),
   ]));
 }
@@ -1454,14 +1510,19 @@ function paintCanopy(canvas, { baseY, height, colours }) {
   for (let x = -10; x <= BIOME_ART_WIDTH + 10; x += canvas.between(6, 10)) {
     const radius = canvas.between(5, 11);
     const top = baseY - height * (0.6 + 0.3 * Math.sin(x / 70 + phase)) - canvas.between(0, height * 0.25);
+    // a round top on a solid body, so no sky shows under a treetop that stands high
     crowns.push(createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(top + radius), r: roundForSvg(radius), fill: dark }));
+    crowns.push(createSvgElement('rect', { x: roundForSvg(x - radius), y: roundForSvg(top + radius), width: roundForSvg(radius * 2),
+      height: roundForSvg(BIOME_ART_HEIGHT - top - radius), fill: dark }));
     if (canvas.chance(0.45)) {
       lights.push(createSvgElement('ellipse', { cx: roundForSvg(x - radius * 0.25), cy: roundForSvg(top + radius * 0.55),
         rx: roundForSvg(radius * 0.55), ry: roundForSvg(radius * 0.35), fill: middle, opacity: 0.7 }));
     }
   }
+  const fillerTop = roundForSvg(baseY - height * 0.3);
+  canvas.landTops.push(() => fillerTop);
   canvas.add(artGroup('canopy', [
-    createSvgElement('rect', { x: 0, y: roundForSvg(baseY - height * 0.3), width: BIOME_ART_WIDTH, height: roundForSvg(height * 0.3 + 10), fill: dark }),
+    createSvgElement('rect', { x: 0, y: fillerTop, width: BIOME_ART_WIDTH, height: roundForSvg(BIOME_ART_HEIGHT - fillerTop), fill: dark }),
     ...crowns, ...lights,
   ]));
 }
@@ -1648,16 +1709,29 @@ function buildRockPillar(canvas, x, baseY, width, height, { rock, light, cap = n
   ]);
 }
 
-// A huge flat-topped rock formation with horizontal layers in its face.
-function buildMesa(canvas, x, baseY, width, height, { rock, light, strata }) {
+// A huge flat-topped rock formation with horizontal layers in its face. A far
+// one (reachBottom) carries its sides on down to the bottom edge, so its foot
+// is hidden by the land in front instead of hanging in the air.
+function buildMesa(canvas, x, baseY, width, height, { rock, light, strata, reachBottom = false }) {
   const top = baseY - height;
   const leftTop = x - width * canvas.between(0.3, 0.4);
   const rightTop = x + width * canvas.between(0.3, 0.4);
+  const leftFoot = [x - width / 2, baseY];
+  const rightFoot = [x + width / 2, baseY];
+  const litFoot = [x - width * 0.25, baseY];
+  const down = (from, foot) => (reachBottom ? [continueToBottom(from, foot)] : []);
+  // The layer lines run from side to side of the rock at their height, never past it.
+  const sideAt = ([topX, topY], [footX, footY], y) => topX + (footX - topX) * (y - topY) / (footY - topY);
   let layers = '';
-  for (let layer = 1; layer < 4; layer++) layers += `M${roundForSvg(x - width * 0.45)},${roundForSvg(top + height * layer / 4)}h${roundForSvg(width * 0.9)}`;
+  for (let layer = 1; layer < 4; layer++) {
+    const y = top + height * layer / 4;
+    layers += `M${roundForSvg(sideAt([leftTop, top + 3], leftFoot, y) + 1.5)},${roundForSvg(y)}H${roundForSvg(sideAt([rightTop, top + 4], rightFoot, y) - 1.5)}`;
+  }
   return artGroup('mesa', [
-    createSvgElement('polygon', { fill: rock, points: `${roundForSvg(x - width / 2)},${roundForSvg(baseY)} ${roundForSvg(leftTop)},${roundForSvg(top + 3)} ${roundForSvg(leftTop + 4)},${roundForSvg(top)} ${roundForSvg(rightTop - 3)},${roundForSvg(top)} ${roundForSvg(rightTop)},${roundForSvg(top + 4)} ${roundForSvg(x + width / 2)},${roundForSvg(baseY)}` }),
-    createSvgElement('polygon', { fill: light, opacity: 0.35, points: `${roundForSvg(x - width / 2)},${roundForSvg(baseY)} ${roundForSvg(leftTop)},${roundForSvg(top + 3)} ${roundForSvg(leftTop + 4)},${roundForSvg(top)} ${roundForSvg(x - width * 0.15)},${roundForSvg(top)} ${roundForSvg(x - width * 0.25)},${roundForSvg(baseY)}` }),
+    createSvgElement('path', { fill: rock, d: buildOutlinePath([...down([leftTop, top + 3], leftFoot), leftFoot, [leftTop, top + 3], [leftTop + 4, top],
+      [rightTop - 3, top], [rightTop, top + 4], rightFoot, ...down([rightTop, top + 4], rightFoot)]) }),
+    createSvgElement('path', { fill: light, opacity: 0.35, d: buildOutlinePath([...down([leftTop, top + 3], leftFoot), leftFoot, [leftTop, top + 3],
+      [leftTop + 4, top], [x - width * 0.15, top], litFoot, ...down([x - width * 0.15, top], litFoot)]) }),
     createSvgElement('path', { d: layers, stroke: strata, 'stroke-width': 1, opacity: 0.5 }),
   ]);
 }
@@ -1675,8 +1749,9 @@ function buildIcicles(canvas, x, baseY, size, { ice, light }) {
   return artGroup('icicles', spikes);
 }
 
-// A tall organic Terminid spire with ribs.
-function buildTerminidSpire(canvas, x, baseY, height, { matter, ridge }) {
+// A tall organic Terminid spire with ribs. A far one (reachBottom) carries its
+// sides on down to the bottom edge, behind the land in front of it.
+function buildTerminidSpire(canvas, x, baseY, height, { matter, ridge, reachBottom = false }) {
   const width = height * canvas.between(0.12, 0.18);
   const lean = canvas.between(-0.15, 0.15) * height;
   let ribs = '';
@@ -1685,8 +1760,9 @@ function buildTerminidSpire(canvas, x, baseY, height, { matter, ridge }) {
     const ribWidth = width * (1 - rib / 6);
     ribs += `M${roundForSvg(x + lean * rib / 5 - ribWidth)},${roundForSvg(ribY)} q${roundForSvg(ribWidth)},3 ${roundForSvg(ribWidth * 2)},0`;
   }
+  const foot = reachBottom ? ` L${roundForSvg(x + width)},${BIOME_ART_HEIGHT} L${roundForSvg(x - width)},${BIOME_ART_HEIGHT}` : '';
   return artGroup('terminid-spire', [
-    createSvgElement('path', { fill: matter, d: `M${roundForSvg(x - width)},${roundForSvg(baseY)} Q${roundForSvg(x - width * 0.5 + lean * 0.4)},${roundForSvg(baseY - height * 0.55)} ${roundForSvg(x + lean)},${roundForSvg(baseY - height)} Q${roundForSvg(x + width * 0.5 + lean * 0.4)},${roundForSvg(baseY - height * 0.5)} ${roundForSvg(x + width)},${roundForSvg(baseY)} Z` }),
+    createSvgElement('path', { fill: matter, d: `M${roundForSvg(x - width)},${roundForSvg(baseY)} Q${roundForSvg(x - width * 0.5 + lean * 0.4)},${roundForSvg(baseY - height * 0.55)} ${roundForSvg(x + lean)},${roundForSvg(baseY - height)} Q${roundForSvg(x + width * 0.5 + lean * 0.4)},${roundForSvg(baseY - height * 0.5)} ${roundForSvg(x + width)},${roundForSvg(baseY)}${foot} Z` }),
     createSvgElement('path', { d: ribs, stroke: ridge, 'stroke-width': 1, fill: 'none', opacity: 0.7 }),
   ]);
 }
@@ -1700,6 +1776,7 @@ function buildHiveMound(x, baseY, width, height, { matter, hole }) {
 }
 
 // A volcano: a cone with a glowing crater, lava running down and a smoke plume.
+// The cone's slopes run on to the bottom edge.
 function buildVolcano(canvas, x, baseY, width, height, { rock, glow, smoke }) {
   const top = baseY - height;
   const crater = width * 0.14;
@@ -1726,7 +1803,8 @@ function buildVolcano(canvas, x, baseY, width, height, { rock, glow, smoke }) {
   });
   return artGroup('volcano', [
     ...puffs,
-    createSvgElement('polygon', { fill: rock, points: `${roundForSvg(x - width)},${roundForSvg(baseY)} ${roundForSvg(x - crater)},${roundForSvg(top)} ${roundForSvg(x + crater)},${roundForSvg(top)} ${roundForSvg(x + width)},${roundForSvg(baseY)}` }),
+    createSvgElement('path', { fill: rock, d: buildOutlinePath([continueToBottom([x - crater, top], [x - width, baseY]), [x - width, baseY],
+      [x - crater, top], [x + crater, top], [x + width, baseY], continueToBottom([x + crater, top], [x + width, baseY])]) }),
     createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(top), rx: roundForSvg(crater * 1.1), ry: 2.5, fill: glow }),
     ...lavaFlows,
   ]);
@@ -1858,12 +1936,13 @@ function paintMeteors(canvas) {
   canvas.add(artGroup('meteors', meteors));
 }
 
-// A wall of sand on the horizon, and haze over everything.
+// A wall of sand on the horizon that fades out towards the ground, and haze over
+// everything.
 function paintSandstorm(canvas, { colour }) {
   let top = 'M0,112 L0,60';
   for (let x = 30; x <= BIOME_ART_WIDTH; x += 30) top += ` Q${x - 15},${roundForSvg(canvas.between(30, 50))} ${x},${roundForSvg(canvas.between(48, 64))}`;
   canvas.add(artGroup('sandstorm', [
-    createSvgElement('path', { d: `${top} L${BIOME_ART_WIDTH},112 Z`, fill: colour, opacity: 0.55 }),
+    createSvgElement('path', { d: `${top} L${BIOME_ART_WIDTH},112 Z`, fill: addArtGradient(canvas, [['0%', colour, 0.55], ['70%', colour, 0.45], ['100%', colour, 0]]) }),
     createSvgElement('rect', { width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT, fill: colour, opacity: 0.15 }),
   ]));
 }
@@ -1889,7 +1968,10 @@ function paintWeather(canvas, weather, { fogColour = '#c8ccd0' } = {}) {
   if (has('sandstorm')) paintSandstorm(canvas, { colour: '#d9b27a' });
   if (has('acid')) paintTint(canvas, { colour: '#c8e04a', opacity: 0.18, kind: 'acid-storm' });
   if (has('ion')) paintIonStorm(canvas);
-  if (has('fire-tornado')) canvas.add(buildFireTornado(canvas, canvas.between(30, 430), canvas.between(114, 130), canvas.between(50, 76)));
+  if (has('fire-tornado')) {
+    const x = canvas.between(30, 430);
+    canvas.add(buildFireTornado(canvas, x, Math.max(canvas.between(114, 130), landTopAt(canvas, x) + 2), canvas.between(50, 76)));
+  }
   if (has('meteors')) paintMeteors(canvas);
   if (has('embers')) paintSpecks(canvas, { colour: '#ff9a3a', count: 25, size: 1.6, opacity: 0.8, kind: 'embers' });
   if (has('rain')) paintRain(canvas);
@@ -1978,7 +2060,7 @@ const BIOME_PAINTERS = {
   // puddles and drifting spores, with patches of grass and grey rock.
   supercolony: canvas => {
     paintSky(canvas, ['#3e3018', '#7e6430', '#d0aa60']);
-    paintPlants(canvas, 5, { minY: 96, maxY: 100 }, ({ x, y }) => buildTerminidSpire(canvas, x, y, canvas.between(26, 44), { matter: '#6a4a24', ridge: '#4a3218' }));
+    paintPlants(canvas, 5, { minY: 96, maxY: 100 }, ({ x, y }) => buildTerminidSpire(canvas, x, y, canvas.between(26, 44), { matter: '#6a4a24', ridge: '#4a3218', reachBottom: true }));
     paintHills(canvas, '#7a5222', { baseY: 108, amplitude: 10 });
     paintGround(canvas, { y: 116, top: '#7a5222', bottom: '#563614' });
     canvas.add(artGroup('grass-patch', [createSvgElement('ellipse', { cx: roundForSvg(canvas.between(60, 400)), cy: 132, rx: 36, ry: 6, fill: '#5a7a3a' })]));
@@ -2189,6 +2271,7 @@ const BIOME_PAINTERS = {
   'haunted-swamp': canvas => {
     paintSky(canvas, ['#223029', '#44574f', '#72857b']);
     paintPeaks(canvas, { colour: '#3c4a45', baseY: 104, minHeight: 22, maxHeight: 40, count: 4, sharpness: 0.2 });
+    paintHills(canvas, '#33403b', { baseY: 106, amplitude: 3 }, 'far-shore');
     paintPlants(canvas, 6, { minY: 100, maxY: 108 }, ({ x, y }) => buildBareTree(canvas, x, y, canvas.between(16, 26), { colour: '#3a4843', twist: 0.55 }));
     paintFog(canvas, { colour: '#98aaa0', bands: [[64, 50, 0.6]] });
     paintGround(canvas, { y: 110, top: '#3c372d', bottom: '#29251f' });
@@ -2241,7 +2324,7 @@ const BIOME_PAINTERS = {
   // Sand and rock with mega rock formations taller than buildings, and dead shrubs.
   'rocky-canyons': canvas => {
     paintSky(canvas, ['#5a7aa4', '#a8b8c4', '#e6bd92']);
-    paintPlants(canvas, 3, { minY: 104, maxY: 112 }, ({ x, y }) => buildMesa(canvas, x, y, canvas.between(50, 90), canvas.between(40, 70), { rock: '#8a5034', light: '#c08058', strata: '#6a3a24' }));
+    paintPlants(canvas, 3, { minY: 104, maxY: 112 }, ({ x, y }) => buildMesa(canvas, x, y, canvas.between(50, 90), canvas.between(40, 70), { rock: '#8a5034', light: '#c08058', strata: '#6a3a24', reachBottom: true }));
     paintHills(canvas, '#c08654', { baseY: 118, amplitude: 8 });
     paintGround(canvas, { y: 124, top: '#cc9460', bottom: '#aa7446' });
     paintPlants(canvas, 2, { minY: 124, maxY: 146 }, ({ x, y, depth }) => buildMesa(canvas, x, y, 30 + depth * 30, 20 + depth * 30, { rock: '#9c5a3a', light: '#d09068', strata: '#6e3e26' }));
@@ -2262,7 +2345,7 @@ const BIOME_PAINTERS = {
           d: `M${roundForSvg(mistX - 2)},${roundForSvg(topY)} Q${roundForSvg(mistX - 4)},${roundForSvg(topY + height * 0.5)} ${roundForSvg(mistX - 9)},${roundForSvg(y)} L${roundForSvg(mistX + 9)},${roundForSvg(y)} Q${roundForSvg(mistX + 4)},${roundForSvg(topY + height * 0.5)} ${roundForSvg(mistX + 2)},${roundForSvg(topY)} Z` });
       });
       return artGroup('mega-rock', [
-        buildMesa(canvas, x, y, width, height, { rock: '#6e6040', light: '#a09060', strata: '#4e4430' }),
+        buildMesa(canvas, x, y, width, height, { rock: '#6e6040', light: '#a09060', strata: '#4e4430', reachBottom: true }),
         ...mist,
         createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(width * 0.75), ry: 6, fill: addArtGradient(canvas, [['0%', '#f4ec70', 0.5], ['100%', '#f4ec70', 0]], true) }),
       ]);
@@ -2298,10 +2381,11 @@ const BIOME_PAINTERS = {
     paintGrass(canvas, { colour: '#a8a8a8', minY: 124, maxY: 148, count: 20 });
   },
 
-  // Super Earth: a skyline of towers with lit windows.
+  // Super Earth: a skyline of towers with lit windows, on a dark street level.
   'super-earth': canvas => {
     paintSky(canvas, ['#1f3a64', '#4f75a4', '#9ab8dc']);
     paintClouds(canvas, { colour: '#ffffff', count: 3, opacity: 0.4 });
+    paintGround(canvas, { y: 106, top: '#2c3e5e', bottom: '#18233a' });
     for (const [base, colour, minHeight, maxHeight] of [[112, '#3e5680', 30, 70], [148, '#22324e', 40, 95]]) {
       let x = -5;
       while (x < BIOME_ART_WIDTH) {
