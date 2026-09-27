@@ -1,0 +1,14 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <title>Illuminate: an eye (original symbol drawn for this page)</title>
+  <defs>
+    <mask id="illuminate-pupil">
+      <rect width="512" height="512" fill="#fff"/>
+      <circle cx="256" cy="290" r="30" fill="#000"/>
+    </mask>
+  </defs>
+  <g fill="none" stroke="#9085e9" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M44 290Q256 90 468 290Q256 490 44 290Z"/>
+    <path d="M256 64V114M150 92L178 136M362 92L334 136"/>
+  </g>
+  <circle cx="256" cy="290" r="80" fill="#9085e9" mask="url(#illuminate-pupil)"/>
+</svg>

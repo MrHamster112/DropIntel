@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="DropIntel, a fan-made war tracker for Helldivers 2: the Major Order, planets that need you, and defenses at risk." />
+  <title>DropIntel · a fan-made war tracker for Helldivers 2</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="guide-data.js" defer></script>
+  <script src="script.js" defer></script>
+</head>
+<body data-current-view="simple">
+<a class="skip-link" href="#main-content">Skip to the war status</a>
+
+<header class="site-header">
+  <div class="site-title">
+    <img class="site-emblem" src="images/faction-icons/Super%20Earth.svg" alt="Super Earth logo" width="40" height="40">
+    <div>
+      <h1>DropIntel</h1>
+      <p class="site-subtitle">A fan-made war tracker for Helldivers 2</p>
+    </div>
+  </div>
+
+  <div class="header-controls">
+    <div class="view-mode-switch" role="group" aria-label="View mode">
+      <button type="button" class="view-mode-button" data-view-mode="simple" aria-pressed="true">Simple</button>
+      <button type="button" class="view-mode-button" data-view-mode="advanced" aria-pressed="false">Advanced</button>
+      <button type="button" class="view-mode-button" data-view-mode="guide" aria-pressed="false">Guide</button>
+    </div>
+
+    <div class="refresh-controls">
+      <button type="button" id="refresh-button" class="refresh-button">Refresh now</button>
+      <span class="countdown" id="countdown-text">Next refresh in 60s</span>
+      <label class="server-choice advanced-only" hidden>Data source
+        <select id="server-select">
+          <option value="auto">Auto (primary, backup if it fails)</option>
+          <option value="live">Primary only (api.helldivers2.dev)</option>
+          <option value="backup">Backup only (helldiverstrainingmanual.com)</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div class="status-line">
+    <p id="status-bar" class="status-bar" role="status" aria-live="polite">Loading…</p>
+    <p id="data-age" class="data-age"></p>
+  </div>
+</header>
+
+<main id="main-content" tabindex="-1">
+
+  <div id="simple-view" class="view simple-view" data-view="simple">
+    <section class="glance" aria-labelledby="glance-heading">
+      <h2 id="glance-heading" class="visually-hidden">The war at a glance</h2>
+      <div id="simple-glance" class="glance-grid"></div>
+    </section>
+
+    <section id="mo-box" class="panel mo-box" aria-labelledby="mo-heading">
+      <h2 id="mo-heading">Major Order</h2>
+      <p id="mo-empty" class="empty-state" style="display:none;">No Major Order right now. Any liberation or defense still helps the war.</p>
+      <div id="mo-content">
+        <h3 id="mo-title" class="mo-title">—</h3>
+        <p id="mo-timeLeft" class="mo-time-left"></p>
+        <p id="mo-briefing" class="mo-briefing"></p>
+        <ol id="mo-tasks" class="mo-tasks"></ol>
+        <p id="mo-reward" class="mo-reward"></p>
+        <p id="mo-more" class="mo-more"></p>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="defenses-heading">
+      <h2 id="defenses-heading">Defenses</h2>
+      <div id="simple-defenses" class="card-grid"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="drop-heading">
+      <h2 id="drop-heading">Where to drop</h2>
+      <p class="section-hint">Ranked by the Major Order, how the fight is going, and where other Helldivers are.</p>
+      <div id="simple-drop-targets" class="card-grid"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dispatch-heading">
+      <h2 id="dispatch-heading">Latest dispatch</h2>
+      <div id="simple-latest-dispatch" class="dispatch"></div>
+    </section>
+  </div>
+
+  <div id="advanced-view" class="view advanced-view" data-view="advanced" hidden>
+    <div class="advanced-toolbar" role="region" aria-label="Advanced navigation">
+      <nav class="section-nav" aria-label="Advanced sections">
+        <a href="#war-map-heading" data-section="advanced-section-war-map">Map</a>
+        <a href="#gambits-heading" data-section="advanced-section-gambits">Gambits</a>
+        <a href="#war-statistics-heading" data-section="advanced-section-war-statistics">Statistics</a>
+        <a href="#graphs-heading" data-section="advanced-section-graphs">Graphs</a>
+        <a href="#assignments-heading" data-section="advanced-section-assignments">Orders</a>
+        <a href="#campaigns-heading" data-section="advanced-section-campaigns">Campaigns</a>
+        <a href="#defense-events-heading" data-section="advanced-section-defense-events">Defenses</a>
+        <a href="#planets-heading" data-section="advanced-section-planets">Planets</a>
+        <a href="#planet-effects-heading" data-section="advanced-section-planet-effects">Effects</a>
+        <a href="#space-station-heading" data-section="advanced-section-space-station">DSS</a>
+        <a href="#dispatches-heading" data-section="advanced-section-dispatches">Dispatches</a>
+        <a href="#raw-data-heading" data-section="advanced-section-raw-data">Raw data</a>
+      </nav>
+      <div class="toolbar-row">
+        <form id="planet-jump-form" class="planet-jump" role="search">
+          <label><span class="planet-jump-label">Jump to planet</span>
+            <input type="text" id="planet-jump-input" list="planet-jump-options" autocomplete="off" placeholder="Jump to a planet…">
+          </label>
+          <datalist id="planet-jump-options"></datalist>
+          <button type="submit">Go</button>
+          <span id="planet-jump-status" class="section-hint" aria-live="polite"></span>
+        </form>
+        <div class="toolbar-buttons">
+          <button type="button" id="expand-all-sections">Expand all</button>
+          <button type="button" id="collapse-all-sections">Collapse all</button>
+        </div>
+      </div>
+    </div>
+
+    <section class="panel collapsible-section" id="advanced-section-war-map" aria-labelledby="war-map-heading">
+      <h2 id="war-map-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-war-map-body">Galactic war map</button>
+      </h2>
+      <div id="advanced-section-war-map-body" class="collapsible-body">
+        <div id="output-war-map"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-gambits" aria-labelledby="gambits-heading">
+      <h2 id="gambits-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-gambits-body">Gambits and priorities, per front</button>
+      </h2>
+      <div id="advanced-section-gambits-body" class="collapsible-body">
+        <p class="section-hint">Worked out in your browser from the numbers on this page, with fixed weights: every point a planet scores is listed with its reason. No network call is involved. It is an estimate, and it can't see what the game will do next. A <strong>gambit</strong> means ending an enemy attack by liberating the planet it comes from.</p>
+        <div id="output-gambits" class="gambit-grid"></div>
+        <p id="llm-announcer" class="visually-hidden" aria-live="polite"></p>
+        <details class="llm-settings" id="llm-settings">
+          <summary>Optional: AI-written summaries with your own Google Gemini key</summary>
+          <p>Off by default. With a key, each front gets an "Ask Gemini" button that sends that front's analysis (the numbers and reasons above) to Google's Gemini API and shows the reply, labelled as AI-written. The analysis above never depends on it.</p>
+          <ul class="llm-facts">
+            <li>Get a key at <a href="https://aistudio.google.com/apikey" rel="noopener noreferrer" target="_blank">aistudio.google.com/apikey</a>. Google's free tier has daily limits.</li>
+            <li>The key is kept in this browser's local storage, on this device only. It is sent to <code>generativelanguage.googleapis.com</code> and nowhere else, and only when you press an Ask button.</li>
+            <li>Anyone who can use this browser profile can read it. On a shared computer, use "Forget key" when you're done.</li>
+            <li>Nothing about you is sent, only public war numbers. On the free tier Google may use what is sent to improve its products.</li>
+            <li>AI text can be wrong or made up. Check it against the numbers above.</li>
+          </ul>
+          <form id="llm-settings-form" class="llm-settings-form" autocomplete="off">
+            <label>Gemini API key
+              <input type="password" id="llm-api-key" autocomplete="off" spellcheck="false" placeholder="Paste your key">
+            </label>
+            <label>Model
+              <input type="text" id="llm-model" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="llm-settings-buttons">
+              <button type="submit">Save</button>
+              <button type="button" id="llm-forget-key">Forget key</button>
+            </div>
+          </form>
+          <p id="llm-settings-status" class="section-hint" aria-live="polite"></p>
+        </details>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-war-statistics" aria-labelledby="war-statistics-heading">
+      <h2 id="war-statistics-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-war-statistics-body">War statistics and clock</button>
+      </h2>
+      <div id="advanced-section-war-statistics-body" class="collapsible-body">
+        <div id="output-war-statistics"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-graphs" aria-labelledby="graphs-heading">
+      <h2 id="graphs-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-graphs-body">Trends this session</button>
+      </h2>
+      <div id="advanced-section-graphs-body" class="collapsible-body">
+        <p class="section-hint">Drawn from what this page has seen on each refresh (kept for 45 minutes, Major Orders for 6 hours). With less than five minutes of history a graph says "measuring" instead of drawing.</p>
+        <div id="output-graphs"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-assignments" aria-labelledby="assignments-heading">
+      <h2 id="assignments-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-assignments-body">Orders in full</button>
+      </h2>
+      <div id="advanced-section-assignments-body" class="collapsible-body">
+        <div id="output-assignments"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-campaigns" aria-labelledby="campaigns-heading">
+      <h2 id="campaigns-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-campaigns-body">Every active campaign</button>
+      </h2>
+      <div id="advanced-section-campaigns-body" class="collapsible-body">
+        <div class="section-controls">
+          <label>Front
+            <select id="campaign-faction-filter">
+              <option value="all">All fronts</option>
+              <option value="terminids">Terminids</option>
+              <option value="automaton">Automatons</option>
+              <option value="illuminate">Illuminate</option>
+            </select>
+          </label>
+          <label>Sort by
+            <select id="campaign-sort">
+              <option value="priority">Priority</option>
+              <option value="players">Helldivers</option>
+              <option value="progress">Progress</option>
+              <option value="name">Name</option>
+            </select>
+          </label>
+        </div>
+        <p class="section-hint">Rates are measured by this page from successive refreshes (they need about five minutes), and "Helldivers to break even" is an estimate from that measurement.</p>
+        <div id="output-campaigns" class="card-grid card-grid-wide"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-defense-events" aria-labelledby="defense-events-heading">
+      <h2 id="defense-events-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-defense-events-body">Defense events</button>
+      </h2>
+      <div id="advanced-section-defense-events-body" class="collapsible-body">
+        <div id="output-defense-events"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-planets" aria-labelledby="planets-heading">
+      <h2 id="planets-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-planets-body">Enemy-held and contested planets</button>
+      </h2>
+      <div id="advanced-section-planets-body" class="collapsible-body">
+        <div id="output-planets"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-planet-effects" aria-labelledby="planet-effects-heading">
+      <h2 id="planet-effects-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-planet-effects-body">Planet modifiers and effects</button>
+      </h2>
+      <div id="advanced-section-planet-effects-body" class="collapsible-body">
+        <div id="output-planet-effects"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-space-station" aria-labelledby="space-station-heading">
+      <h2 id="space-station-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-space-station-body">Democracy Space Station</button>
+      </h2>
+      <div id="advanced-section-space-station-body" class="collapsible-body">
+        <div id="output-space-station"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-dispatches" aria-labelledby="dispatches-heading">
+      <h2 id="dispatches-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-dispatches-body">Dispatch feed</button>
+      </h2>
+      <div id="advanced-section-dispatches-body" class="collapsible-body">
+        <div id="output-dispatches"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-raw-data" aria-labelledby="raw-data-heading">
+      <h2 id="raw-data-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-raw-data-body">Raw data</button>
+      </h2>
+      <div id="advanced-section-raw-data-body" class="collapsible-body">
+        <p class="section-hint">Exactly what the page holds in <code>apiData</code>, after reshaping. Opening a section formats it on demand.</p>
+        <div id="output-raw-data"></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="guide-view" class="view guide-view" data-view="guide" hidden>
+    <section class="panel guide-intro" aria-labelledby="guide-heading">
+      <h2 id="guide-heading">Field guide</h2>
+      <p class="guide-banner" role="note">
+        <strong>Community knowledge, not official.</strong>
+        <span id="guide-disclaimer"></span>
+      </p>
+      <p id="guide-version" class="section-hint"></p>
+      <div class="section-controls">
+        <label>Search
+          <input type="search" id="guide-search" placeholder="e.g. charger, smoke, eagle" autocomplete="off">
+        </label>
+        <label>Front
+          <select id="guide-faction-filter">
+            <option value="all">All fronts</option>
+            <option value="terminids">Terminids</option>
+            <option value="automaton">Automatons</option>
+            <option value="illuminate">Illuminate</option>
+          </select>
+        </label>
+        <span id="guide-match-count" class="section-hint" aria-live="polite"></span>
+      </div>
+      <nav class="section-nav" aria-label="Guide sections">
+        <a href="#guide-factions">Factions</a>
+        <a href="#guide-stratagems">Stratagems</a>
+        <a href="#guide-armour-passives">Armour passives</a>
+        <a href="#guide-ship-modules">Ship modules</a>
+        <a href="#guide-mechanics">Mechanics</a>
+      </nav>
+    </section>
+    <div id="guide-content" class="view"></div>
+  </div>
+
+</main>
+
+<footer class="site-footer">
+  <aside class="support-box" aria-labelledby="support-heading">
+    <h2 id="support-heading" class="support-heading">Support this page</h2>
+    <p>This is a one-person hobby project, free and without ads. If it helps you between missions, you can chip in.</p>
+    <!-- TODO(owner): the real donation URL goes in DONATION_URL at the top of script.js. Until then this stays href="#". -->
+    <a id="support-link" class="support-button" href="#">Support the project</a>
+  </aside>
+  <p>
+    Unofficial fan project — not affiliated with or endorsed by Arrowhead Game Studios or Sony Interactive Entertainment.
+    HELLDIVERS&trade; 2 and all game assets &copy; their respective owners.
+  </p>
+  <p>
+    The planet landscapes are drawn for this page. Faction logos &copy; Arrowhead Game Studios, as traced by
+    Helldivers Wiki contributors.
+    War data from the community APIs at api.helldivers2.dev and helldiverstrainingmanual.com.
+  </p>
+  <p>
+    DropIntel is free to use online or on your own computer:
+    <a href="https://github.com/MrHamster112/DropIntel/archive/refs/heads/main.zip">download it (ZIP)</a>,
+    unzip it and open <code>index.html</code>.
+  </p>
+  <p class="ai-note">
+    Made by MrHamster112 with help from AI: most of the code and text on this page were written with
+    Claude, an AI assistant made by Anthropic.
+  </p>
+</footer>
+</body>
+</html>

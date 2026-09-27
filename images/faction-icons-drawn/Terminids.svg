@@ -1,0 +1,14 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <title>Terminids: a bug seen from above (original symbol drawn for this page)</title>
+  <g fill="none" stroke="#c98500" stroke-width="24" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M206 186L132 150L100 92M306 186L380 150L412 92"/>
+    <path d="M200 214L116 226L70 196M312 214L396 226L442 196"/>
+    <path d="M210 246L146 302L118 372M302 246L366 302L394 372"/>
+    <path d="M238 104Q216 76 234 50M274 104Q296 76 278 50"/>
+  </g>
+  <g fill="#c98500">
+    <ellipse cx="256" cy="336" rx="88" ry="118"/>
+    <ellipse cx="256" cy="204" rx="60" ry="50"/>
+    <circle cx="256" cy="130" r="38"/>
+  </g>
+</svg>

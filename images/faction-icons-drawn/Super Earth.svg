@@ -1,0 +1,8 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <title>Super Earth: a globe (original symbol drawn for this page)</title>
+  <g fill="none" stroke="#f5c518" stroke-width="30" stroke-linecap="round">
+    <circle cx="256" cy="256" r="196"/>
+    <ellipse cx="256" cy="256" rx="84" ry="196"/>
+    <path d="M60 256H452M86 158H426M86 354H426"/>
+  </g>
+</svg>
