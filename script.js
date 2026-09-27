@@ -19,10 +19,9 @@ const DISPLAY_LOCALE = 'en-GB';
 const EFFECT_NAMES_DATABASE_URL =
   'https://raw.githubusercontent.com/helldivers-2/json/master/effects/planetEffects.json';
 
-// TODO(owner): put your donation page here, e.g. 'https://ko-fi.com/yourname'.
-// While it is empty the footer's "Support the project" button stays href="#"
-// and does nothing when clicked.
-const DONATION_URL = '';
+// The owner's donation page, opened by the footer's "Support the project" button.
+// Set it to '' and the button stays href="#" and does nothing when clicked.
+const DONATION_URL = 'https://buycoffee.to/dropintel';
 
 const REFRESH_INTERVAL_SECONDS = 60;
 const RATE_LIMIT_WINDOW_MILLISECONDS = 10500;       // primary API allows ~5 requests / 10s

@@ -15,8 +15,8 @@ Google Gemini key for AI summaries) are kept only in your own browser.
 
 ## Support
 
-DropIntel is free and has no ads. If it helps you between missions, you can buy me a coffee from
-the button at the bottom of the page.
+DropIntel is free and has no ads. If it helps you between missions, you can buy me a coffee:
+https://buycoffee.to/dropintel
 
 ## Made with AI help
 
