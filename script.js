@@ -923,105 +923,153 @@ function normalizeBiomeKey(biomeName) {
   return String(biomeName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// A readable biome name for labels and alt text ("icemoss-special" → "Icemoss special").
+// True for a display name from the primary API ("Moon"), false for a backup slug
+// ("moon"). Some slugs are spelled like display names, so the case matters.
+function isBiomeDisplayName(biomeName) {
+  return typeof biomeName === 'string' && /[A-Z ]/.test(biomeName);
+}
+
+// A readable biome name for labels and alt text. A backup slug ("desolate")
+// becomes the biome it stands for ("Scorched Moor").
 function getBiomeDisplayName(planet) {
   const learnedBiomeName = apiData.knownBiomeNameByPlanetIndex[planet.index];
   if (learnedBiomeName) return learnedBiomeName;
   const biomeName = planet.biome?.name;
-  if (typeof biomeName !== 'string' || !biomeName) return 'Unknown biome';
-  if (/[A-Z ]/.test(biomeName)) return biomeName;
-  const spaced = biomeName.replace(/[-_]+/g, ' ');
+  if (isBiomeDisplayName(biomeName)) return biomeName;
+  const biomeKey = normalizeBiomeKey(biomeName);
+  if (!biomeKey || BIOME_ID_BY_NAME[biomeKey] || BIOME_ID_BY_BACKUP_SLUG[biomeKey]) {
+    return BIOME_DISPLAY_NAMES[resolveBiomeId(biomeName, planet.index)];
+  }
+  const spaced = String(biomeName).replace(/[-_]+/g, ' ');
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 // ── BIOME ART ────────────────────────────────────────────────────────────────
-// Planet cards get a small landscape the page draws itself from the biome's
-// name, instead of pictures taken from the game, which belong to Arrowhead and
-// Sony. The same planet always gets the same picture; biomes that sound alike
-// share a style. The colours are illustration data, so they live here rather
-// than in style.css.
+// Planet cards get a landscape the page draws itself, instead of pictures from
+// the game (those belong to Arrowhead and Sony). Every biome has its own
+// painter, written from the Helldivers Wiki's description of that biome: which
+// trees grow there (pines, broadleaf trees, tropical jungle trees, gnarled swamp
+// trees, charred or dead trees, palms, or none at all), the ground, the sky and
+// the landmarks. A planet's weather hazards (rain, fog, blizzards, ion storms,
+// fire tornadoes, meteors…) are drawn on top, so planets that share a biome
+// still look like themselves. The same planet always gets the same picture.
+// The colours are illustration data, so they live here rather than in style.css.
 
 const BIOME_ART_WIDTH = 460;
 const BIOME_ART_HEIGHT = 148;
 
-// Which landscape a biome gets: the first rule with a keyword inside the
-// normalized biome name wins, so the more specific words come first.
-const BIOME_TERRAIN_RULES = [
-  ['void',    ['blackhole']],
-  ['static',  ['accessdenied', 'unknown']],
-  ['factory', ['megafactory', 'cyberstan']],
-  ['city',    ['superearth', 'metropolis', 'colonies']],
-  ['hive',    ['hive', 'supercolony']],
-  ['bones',   ['boneyard', 'deadlands', 'desolate', 'shattered']],
-  ['lava',    ['magma', 'volcanic', 'scorched']],
-  ['ice',     ['glacier', 'icy', 'icemoss', 'winter', 'tundra']],
-  ['swamp',   ['swamp', 'moor', 'morass', 'bog']],
-  ['oasis',   ['oasis']],
-  ['dunes',   ['dunes', 'mesa']],
-  ['canyon',  ['cliffs', 'canyon', 'badlands', 'desert', 'toxic']],
-  ['forest',  ['jungle', 'forest', 'undergrowth', 'autumn', 'lush', 'crimson', 'ethereal']],
-  ['craters', ['moon']],
-  ['hills',   ['plains', 'highlands']],
-];
-
-// Words that recolour a landscape ("Deciduous Autumn Forest" is a forest in autumn colours).
-const BIOME_PALETTE_RULES = [
-  ['autumn',   ['autumn']],
-  ['crimson',  ['crimson']],
-  ['ethereal', ['ethereal']],
-  ['ionic',    ['ionic']],
-  ['acid',     ['acid', 'toxic']],
-  ['haunted',  ['haunted']],
-  ['bleak',    ['bleak']],
-];
-
-// Sky gradient, far and near ground, a feature colour (trees, water, lava…)
-// and a light colour (sun, windows, glow).
-const BIOME_PALETTES = {
-  hills:    { skyTop: '#1b2a41', skyBottom: '#58708c', far: '#4a6457', near: '#2c3f34', feature: '#6d8a5c', light: '#f1e2b0' },
-  forest:   { skyTop: '#132235', skyBottom: '#3e6770', far: '#2d5144', near: '#182d22', feature: '#2e6a44', light: '#d9ecc9' },
-  autumn:   { skyTop: '#2a1f2e', skyBottom: '#8a5a3c', far: '#6b4a2f', near: '#3a2a1c', feature: '#c8702d', light: '#f6d49a' },
-  crimson:  { skyTop: '#2a1420', skyBottom: '#7a2f3a', far: '#5a2430', near: '#2e1218', feature: '#b23a48', light: '#f3b5a0' },
-  ethereal: { skyTop: '#1c1636', skyBottom: '#5a4a8c', far: '#3e3a6b', near: '#221f3f', feature: '#8f7fd6', light: '#e6dcff' },
-  ionic:    { skyTop: '#0f2130', skyBottom: '#2f7f8f', far: '#1f5560', near: '#112f36', feature: '#3fb0b8', light: '#cff4f4' },
-  acid:     { skyTop: '#1e2616', skyBottom: '#7a8a3a', far: '#5a6a2a', near: '#2e3616', feature: '#a8c43a', light: '#eef7a0' },
-  haunted:  { skyTop: '#151a1c', skyBottom: '#4a5a58', far: '#34403d', near: '#1c2322', feature: '#5f7a6a', light: '#c9d6cf' },
-  bleak:    { skyTop: '#23211f', skyBottom: '#7d7466', far: '#5c554b', near: '#34302a', feature: '#5f8a86', light: '#e8e0cc' },
-  dunes:    { skyTop: '#2a2438', skyBottom: '#c98f5a', far: '#b07a48', near: '#7a5230', feature: '#d9a66a', light: '#fff0c8' },
-  oasis:    { skyTop: '#1f2a44', skyBottom: '#d6a36a', far: '#b58450', near: '#86603a', feature: '#2f8f7f', light: '#fff2cf' },
-  canyon:   { skyTop: '#2b2030', skyBottom: '#b0643e', far: '#8a4a30', near: '#5a2e1e', feature: '#c47a4a', light: '#ffe0b0' },
-  ice:      { skyTop: '#14223a', skyBottom: '#6e8fb4', far: '#9fb8d0', near: '#d8e6f2', feature: '#b9d3ea', light: '#f4fbff' },
-  swamp:    { skyTop: '#16201c', skyBottom: '#4f6a56', far: '#2f4536', near: '#1b2a20', feature: '#2d4a4a', light: '#dfe8c0' },
-  lava:     { skyTop: '#1a0f12', skyBottom: '#6a2418', far: '#3a1c1a', near: '#1c0d0c', feature: '#ff7a1a', light: '#ffcf6a' },
-  city:     { skyTop: '#111a2c', skyBottom: '#3c5478', far: '#2a3a58', near: '#18233a', feature: '#7f9bc8', light: '#f5c518' },
-  factory:  { skyTop: '#1c0e10', skyBottom: '#6a2a26', far: '#3a2224', near: '#1e1416', feature: '#5a3a3a', light: '#ff5a4a' },
-  hive:     { skyTop: '#24160c', skyBottom: '#9a5a1c', far: '#7a4414', near: '#4a2a0c', feature: '#2a1606', light: '#ffd27a' },
-  bones:    { skyTop: '#1e1c1a', skyBottom: '#8a7a66', far: '#6a5e50', near: '#3e362e', feature: '#e6dcc8', light: '#f0e6d0' },
-  craters:  { skyTop: '#06080d', skyBottom: '#1a2230', far: '#5a5f68', near: '#3a3e46', feature: '#2a2d33', light: '#c8ccd4' },
-  void:     { skyTop: '#020205', skyBottom: '#0a0a14', far: '#1a1030', near: '#05050a', feature: '#f0a040', light: '#ffe6b0' },
-  static:   { skyTop: '#1a1d22', skyBottom: '#2a2f36', far: '#3a3f46', near: '#22262c', feature: '#50565e', light: '#8d9ab2' },
+// Every biome the page can draw, with the name shown when the feed only sent a
+// slug: the primary API's own name, so a label reads the same from either source.
+const BIOME_DISPLAY_NAMES = {
+  'super-earth': 'Super Earth', cyberstan: 'Cyberstan Megafactory', 'black-hole': 'Black Hole',
+  shattered: 'Shattered planet', 'hive-world': 'Hive World', supercolony: 'Supercolony',
+  'volcanic-jungle': 'Volcanic Jungle', 'ionic-jungle': 'Ionic Jungle', 'ethereal-jungle': 'Ethereal Jungle',
+  deadlands: 'Deadlands', 'scorched-moor': 'Scorched Moor', 'ionic-crimson': 'Ionic Crimson',
+  tundra: 'Tundra', plains: 'Plains', 'icy-glaciers': 'Icy Glaciers', boneyard: 'Boneyard',
+  'tien-kwan': 'Tien Kwan Special', magma: 'Magma', 'deciduous-forest': 'Deciduous Forest',
+  'autumn-forest': 'Deciduous Autumn Forest', 'crimson-forest': 'Deciduous Crimson Forest', moon: 'Moon',
+  'basic-swamp': 'Basic Swamp', 'haunted-swamp': 'Haunted Swamp', 'desert-dunes': 'Desert Dunes',
+  'desert-cliffs': 'Desert Cliffs', 'rocky-canyons': 'Rocky Canyons', 'acidic-badlands': 'Acidic Badlands',
+  'desert-oasis': 'Desert Oasis', 'bleak-oasis': 'Bleak Oasis', unknown: 'Unknown biome',
 };
 
-// Landscapes under a dark sky get stars instead of a sun.
-const BIOME_TERRAINS_WITH_STARS = ['void', 'craters', 'city', 'lava', 'ethereal'];
+// Biome names (normalized) → biome. The primary API's names, plus the names
+// the wiki uses for the same biomes.
+const BIOME_ID_BY_NAME = {
+  superearth: 'super-earth', superearthmetropolis: 'super-earth', metropolis: 'super-earth', colonies: 'super-earth',
+  cyberstanmegafactory: 'cyberstan', automatonmegafactory: 'cyberstan', blackhole: 'black-hole',
+  hiveworld: 'hive-world', supercolony: 'supercolony', volcanicjungle: 'volcanic-jungle',
+  ionicjungle: 'ionic-jungle', etherealjungle: 'ethereal-jungle', deadlands: 'deadlands',
+  scorchedmoor: 'scorched-moor', ioniccrimson: 'ionic-crimson', tundra: 'tundra', plains: 'plains',
+  icyglaciers: 'icy-glaciers', boneyard: 'boneyard', tienkwanspecial: 'tien-kwan', magma: 'magma',
+  magmadesert: 'magma', deciduousforest: 'deciduous-forest', deciduousautumnforest: 'autumn-forest',
+  westfallforest: 'autumn-forest', autumnforest: 'autumn-forest', deciduouscrimsonforest: 'crimson-forest',
+  moon: 'moon', basicswamp: 'basic-swamp', hauntedswamp: 'haunted-swamp', desertdunes: 'desert-dunes',
+  desertcliffs: 'desert-cliffs', rockycanyons: 'rocky-canyons', acidicbadlands: 'acidic-badlands',
+  desertoasis: 'desert-oasis', bleakoasis: 'bleak-oasis', accessdenied: 'unknown', unknown: 'unknown',
+};
+
+// Backup-API biome slugs → biome. Each slug's planets were matched to a biome
+// by their biome description in the captured /planets feed; every slug covers
+// exactly one biome ("swamp" is the Deadlands, "desolate" the Scorched Moor).
+const BIOME_ID_BY_BACKUP_SLUG = {
+  autumn: 'autumn-forest', blackhole: 'black-hole', canyon: 'rocky-canyons', crimsonmoor: 'ionic-crimson',
+  desert: 'desert-cliffs', desolate: 'scorched-moor', ethereal: 'ethereal-jungle', highlands: 'plains',
+  icemoss: 'boneyard', icemossspecial: 'tien-kwan', jungle: 'volcanic-jungle', lush: 'deciduous-forest',
+  magma: 'magma', mesa: 'desert-dunes', moon: 'moon', morass: 'haunted-swamp', rainforest: 'ionic-jungle',
+  shattered: 'shattered', superearth: 'super-earth', swamp: 'deadlands', toxic: 'acidic-badlands',
+  tundra: 'tundra', undergrowth: 'basic-swamp', winter: 'icy-glaciers',
+};
+
+// Planets whose biome changed after the backup API recorded it, or that it has
+// no biome for: the biome the primary API (or, for Khandark, the wiki) shows
+// now. Used only when no primary name is known for the planet.
+const CURRENT_BIOME_BY_PLANET_INDEX = {
+  9: 'basic-swamp', 10: 'tundra', 21: 'ethereal-jungle', 26: 'haunted-swamp', 29: 'tundra', 36: 'haunted-swamp',
+  37: 'tundra', 178: 'basic-swamp', 187: 'haunted-swamp', 205: 'haunted-swamp', 259: 'hive-world',
+};
+
+// For a biome name the page has never seen: a word in it picks a look-alike.
+const BIOME_KEYWORD_GUESSES = [
+  ['glacier', 'icy-glaciers'], ['snow', 'icy-glaciers'], ['frost', 'icy-glaciers'], ['arctic', 'icy-glaciers'],
+  ['magma', 'magma'], ['lava', 'magma'], ['haunted', 'haunted-swamp'], ['swamp', 'basic-swamp'],
+  ['marsh', 'basic-swamp'], ['jungle', 'volcanic-jungle'], ['forest', 'deciduous-forest'], ['wood', 'deciduous-forest'],
+  ['oasis', 'desert-oasis'], ['dune', 'desert-dunes'], ['canyon', 'rocky-canyons'], ['desert', 'desert-cliffs'],
+  ['moor', 'plains'], ['plain', 'plains'], ['moon', 'moon'], ['hive', 'hive-world'], ['city', 'super-earth'],
+  ['factory', 'cyberstan'],
+];
+
+// Weather hazards (normalized) → what gets drawn over the landscape.
+const WEATHER_BY_HAZARD = {
+  rainstorms: 'rain', thickfog: 'fog', blizzards: 'snow', ionstorms: 'ion', firetornadoes: 'fire-tornado',
+  meteorstorms: 'meteors', sandstorms: 'sandstorm', acidstorms: 'acid', volcanicactivity: 'embers',
+  intenseheat: 'heat', durialintenseheat: 'heat', extremecold: 'frost', nocturnalextremecold: 'frost',
+};
 
 let biomeArtCounter = 0;   // gradient ids must be unique on the page
 
-// The first rule whose keyword appears in the key, or null.
-function findBiomeRule(rules, biomeKey) {
-  const rule = rules.find(([, keywords]) => keywords.some(keyword => biomeKey.includes(keyword)));
-  return rule ? rule[0] : null;
+// True when the feed's biome for a planet is the out-of-date slug the backup
+// API recorded before the planet changed (Haldus was a moon, now it is a swamp).
+function hasOutdatedBackupBiome(biomeName, planetIndex) {
+  if (planetIndex === null || !CURRENT_BIOME_BY_PLANET_INDEX[planetIndex]) return false;
+  if (BIOME_ID_BY_NAME[normalizeBiomeKey(apiData.knownBiomeNameByPlanetIndex[planetIndex])]) return false;
+  if (isBiomeDisplayName(biomeName)) return false;
+  const biomeKey = normalizeBiomeKey(biomeName);
+  return !biomeKey || Boolean(BIOME_ID_BY_BACKUP_SLUG[biomeKey]);
 }
 
-// A biome name or slug → {terrain, palette}. The name the primary API gave the
-// planet wins over a backup slug, as for the labels.
-function getBiomeArtRecipe(biomeName, planetIndex = null) {
+// A biome name or slug (and the planet it belongs to) → the biome to draw.
+// The name the primary API gave the planet wins, then a display name sent now,
+// then a backup slug (corrected for planets whose biome has changed since),
+// then a guess from the words in the name.
+function resolveBiomeId(biomeName, planetIndex = null) {
   const learnedBiomeName = planetIndex !== null ? apiData.knownBiomeNameByPlanetIndex[planetIndex] : null;
-  const biomeKey = normalizeBiomeKey(learnedBiomeName || biomeName);
-  if (!biomeKey) return { terrain: 'static', palette: 'static' };
-  const terrain = findBiomeRule(BIOME_TERRAIN_RULES, biomeKey) || 'hills';
-  const palette = findBiomeRule(BIOME_PALETTE_RULES, biomeKey) || terrain;
-  return { terrain, palette };
+  const learnedBiome = BIOME_ID_BY_NAME[normalizeBiomeKey(learnedBiomeName)];
+  if (learnedBiome) return learnedBiome;
+  const biomeKey = normalizeBiomeKey(biomeName);
+  if (isBiomeDisplayName(biomeName) && BIOME_ID_BY_NAME[biomeKey]) return BIOME_ID_BY_NAME[biomeKey];
+  if (hasOutdatedBackupBiome(biomeName, planetIndex)) return CURRENT_BIOME_BY_PLANET_INDEX[planetIndex];
+  const knownBiome = BIOME_ID_BY_BACKUP_SLUG[biomeKey] || BIOME_ID_BY_NAME[biomeKey];
+  if (knownBiome) return knownBiome;
+  if (!biomeKey) return 'unknown';
+  const guess = BIOME_KEYWORD_GUESSES.find(([keyword]) => biomeKey.includes(keyword));
+  return guess ? guess[1] : 'plains';
+}
+
+// A planet's hazards → the weather to draw ('rain', 'fog', 'snow'…), without repeats.
+function getWeatherFromHazards(hazards) {
+  const weather = asArray(hazards)
+    .map(hazard => WEATHER_BY_HAZARD[normalizeBiomeKey(isPlainObject(hazard) ? hazard.name : hazard)])
+    .filter(Boolean);
+  return [...new Set(weather)];
+}
+
+// What to draw for a planet: its biome and its weather. An out-of-date backup
+// biome comes with that old biome's hazards (blizzards on what is now a swamp),
+// so they stay out of the picture.
+function getBiomeArtRecipe(biomeName, planetIndex = null, hazards = []) {
+  const weather = hasOutdatedBackupBiome(biomeName, planetIndex) ? [] : getWeatherFromHazards(hazards);
+  return { biome: resolveBiomeId(biomeName, planetIndex), weather };
 }
 
 // A 32-bit hash of a string (FNV-1a), to seed a planet's picture.
@@ -1051,8 +1099,175 @@ function randomBetween(random, low, high) {
   return low + random() * (high - low);
 }
 
-// The outline of a range of hills or mountains, closed along the bottom edge.
-// Waves set the rolling shape, jaggedness adds peaks, flatTops makes mesas.
+// One decimal place is plenty for a 460×148 picture and keeps the markup small.
+function roundForSvg(value) {
+  return Math.round(value * 10) / 10;
+}
+
+// Mixes two #rrggbb colours; amount 0 gives the first, 1 the second. Used to fade
+// distant things into the haze.
+function mixColours(firstColour, secondColour, amount) {
+  const channels = colour => [1, 3, 5].map(offset => parseInt(colour.slice(offset, offset + 2), 16));
+  const first = channels(firstColour);
+  const second = channels(secondColour);
+  return `#${first.map((channel, position) =>
+    Math.round(channel + (second[position] - channel) * amount).toString(16).padStart(2, '0')).join('')}`;
+}
+
+// Path commands for a smooth curve through points (quadratic curves between
+// midpoints). The path must already stand at the first point.
+function smoothCurveThrough(points) {
+  let commands = '';
+  for (let point = 1; point < points.length - 1; point++) {
+    const [x, y] = points[point];
+    const [nextX, nextY] = points[point + 1];
+    commands += ` Q${roundForSvg(x)},${roundForSvg(y)} ${roundForSvg((x + nextX) / 2)},${roundForSvg((y + nextY) / 2)}`;
+  }
+  const [lastX, lastY] = points[points.length - 1];
+  return `${commands} L${roundForSvg(lastX)},${roundForSvg(lastY)}`;
+}
+
+// A closed shape between two smooth edges, both listed in the same direction.
+function buildRibbonPath(firstEdge, secondEdge) {
+  const backEdge = [...secondEdge].reverse();
+  return `M${roundForSvg(firstEdge[0][0])},${roundForSvg(firstEdge[0][1])}${smoothCurveThrough(firstEdge)}` +
+    ` L${roundForSvg(backEdge[0][0])},${roundForSvg(backEdge[0][1])}${smoothCurveThrough(backEdge)} Z`;
+}
+
+// A drawing in progress: its shapes, gradient definitions and the planet's random numbers.
+function createArtCanvas(random, idPrefix) {
+  const canvas = {
+    random, idPrefix, shapes: [], definitions: [], gradientCount: 0,
+    between: (low, high) => randomBetween(random, low, high),
+    chance: probability => random() < probability,
+    pick: list => list[Math.floor(random() * list.length)],
+    add: (...nodes) => { for (const node of nodes) if (node) canvas.shapes.push(node); },
+  };
+  return canvas;
+}
+
+// Registers a vertical (or radial) gradient and returns its url(#…) fill.
+// Stops are [offset, colour, opacity?].
+function addArtGradient(canvas, stops, radial = false) {
+  const gradientId = `${canvas.idPrefix}-g${++canvas.gradientCount}`;
+  const stopElements = stops.map(([offset, colour, opacity = 1]) =>
+    createSvgElement('stop', { offset, 'stop-color': colour, 'stop-opacity': opacity }));
+  canvas.definitions.push(radial
+    ? createSvgElement('radialGradient', { id: gradientId }, stopElements)
+    : createSvgElement('linearGradient', { id: gradientId, x1: 0, y1: 0, x2: 0, y2: 1 }, stopElements));
+  return `url(#${gradientId})`;
+}
+
+// A named group of shapes; the class says what it is (and lets tests find it).
+function artGroup(kind, children) {
+  return createSvgElement('g', { class: `art-${kind}` }, children);
+}
+
+// Positions for scattered things, far (small, high up) to near (big, low down),
+// in drawing order so nearer things cover farther ones. depth runs 0…1.
+function scatterByDepth(canvas, count, { minY, maxY, minX = -10, maxX = BIOME_ART_WIDTH + 10 }) {
+  const positions = [];
+  for (let item = 0; item < count; item++) {
+    const y = canvas.between(minY, maxY);
+    positions.push({ x: canvas.between(minX, maxX), y, depth: maxY > minY ? (y - minY) / (maxY - minY) : 1 });
+  }
+  return positions.sort((first, second) => first.y - second.y);
+}
+
+// ── Sky and light ──
+
+// The sky: a vertical gradient through the given colours.
+function paintSky(canvas, colours) {
+  const fill = addArtGradient(canvas, colours.map((colour, position) => [`${Math.round(position / (colours.length - 1) * 100)}%`, colour]));
+  canvas.add(createSvgElement('rect', { class: 'art-sky', width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT, fill }));
+}
+
+// A sun (or pale moon) with a soft glow around it.
+function paintSun(canvas, { colour, glow = colour, x = canvas.between(40, 420), y = canvas.between(20, 46), radius = canvas.between(8, 14) }) {
+  canvas.add(artGroup('sun', [
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y), r: roundForSvg(radius * 3), fill: addArtGradient(canvas, [['0%', glow, 0.45], ['100%', glow, 0]], true) }),
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y), r: roundForSvg(radius), fill: colour }),
+  ]));
+}
+
+// A huge sun eclipsed by a dark disc with a pinhole of light (the Bleak Oasis sky).
+function paintEclipsedSun(canvas, { ring, glow }) {
+  const x = canvas.between(150, 310);
+  const y = canvas.between(36, 50);
+  canvas.add(artGroup('eclipsed-sun', [
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y), r: 70, fill: addArtGradient(canvas, [['0%', glow, 0.55], ['100%', glow, 0]], true) }),
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y), r: 30, fill: '#1f1f22', stroke: ring, 'stroke-width': 2.5 }),
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y), r: 1.6, fill: ring }),
+  ]));
+}
+
+// Stars as one path of dots, with a few brighter ones.
+function paintStars(canvas, { count = 30, colour = '#ffffff', maxY = 90 } = {}) {
+  let dots = '';
+  for (let star = 0; star < count; star++) dots += `M${roundForSvg(canvas.between(0, BIOME_ART_WIDTH))},${roundForSvg(canvas.between(0, maxY))}h0.1`;
+  canvas.add(artGroup('stars', [
+    createSvgElement('path', { d: dots, stroke: colour, 'stroke-width': 1.3, 'stroke-linecap': 'round', opacity: 0.8 }),
+  ]));
+}
+
+// Soft clouds made of overlapping ellipses.
+function paintClouds(canvas, { colour, count = 3, minY = 10, maxY = 45, opacity = 0.5 }) {
+  const puffs = [];
+  for (let cloud = 0; cloud < count; cloud++) {
+    const x = canvas.between(-20, BIOME_ART_WIDTH);
+    const y = canvas.between(minY, maxY);
+    const width = canvas.between(40, 90);
+    for (let puff = 0; puff < 4; puff++) {
+      puffs.push(createSvgElement('ellipse', { cx: roundForSvg(x + puff * width / 4), cy: roundForSvg(y - (puff % 2) * 3),
+        rx: roundForSvg(width / 3.2), ry: roundForSvg(canvas.between(4, 8)), fill: colour }));
+    }
+  }
+  canvas.add(createSvgElement('g', { class: 'art-clouds', opacity }, puffs));
+}
+
+// Small birds far off (the Volcanic Jungle's four-winged flocks).
+function paintBirds(canvas, { colour, count = 5 }) {
+  const flockX = canvas.between(60, 380);
+  const flockY = canvas.between(18, 40);
+  let wings = '';
+  for (let bird = 0; bird < count; bird++) {
+    const x = flockX + canvas.between(-30, 30);
+    const y = flockY + canvas.between(-8, 8);
+    const span = canvas.between(2, 3.5);
+    wings += `M${roundForSvg(x - span)},${roundForSvg(y - 1)}q${roundForSvg(span / 2)},1.5 ${roundForSvg(span)},1q${roundForSvg(span / 2)},-0.5 ${roundForSvg(span)},-1`;
+  }
+  canvas.add(artGroup('birds', [createSvgElement('path', { d: wings, stroke: colour, 'stroke-width': 0.9, fill: 'none', opacity: 0.8 })]));
+}
+
+// Northern lights: curtains of light hanging from wavy lines, fading upwards.
+function paintAurora(canvas, colours) {
+  const curtains = colours.map((colour, band) => {
+    const bottom = 34 + band * 9 + canvas.between(-3, 3);
+    const height = canvas.between(14, 24);
+    const lowerEdge = [];
+    for (let x = -20; x <= BIOME_ART_WIDTH + 20; x += 40) lowerEdge.push([x, bottom + canvas.between(-9, 9)]);
+    const upperEdge = lowerEdge.map(([x, y]) => [x + canvas.between(-6, 6), y - height * canvas.between(0.7, 1.2)]);
+    return createSvgElement('path', { d: buildRibbonPath(lowerEdge, upperEdge),
+      fill: addArtGradient(canvas, [['0%', colour, 0], ['75%', colour, 0.22], ['100%', colour, 0.45]]) });
+  });
+  canvas.add(artGroup('aurora', curtains));
+}
+
+// A big planet hanging in the sky, lit from one side.
+function paintSkyPlanet(canvas, { colour, shade }) {
+  const x = canvas.between(60, 400);
+  const y = canvas.between(24, 40);
+  const radius = canvas.between(14, 22);
+  canvas.add(artGroup('sky-planet', [
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y), r: roundForSvg(radius), fill: colour }),
+    createSvgElement('circle', { cx: roundForSvg(x + radius * 0.35), cy: roundForSvg(y - radius * 0.15), r: roundForSvg(radius * 0.95), fill: shade, opacity: 0.85 }),
+  ]));
+}
+
+// ── Land ──
+
+// The outline of rolling hills, closed along the bottom edge. Jaggedness adds
+// rough peaks; flatTops makes stepped mesas.
 function buildRidgePath(random, { baseY, amplitude, jaggedness = 0, flatTops = false }) {
   const waves = [1, 2, 3].map(() => ({ frequency: randomBetween(random, 0.006, 0.03), phase: randomBetween(random, 0, Math.PI * 2) }));
   const points = [];
@@ -1061,172 +1276,1134 @@ function buildRidgePath(random, { baseY, amplitude, jaggedness = 0, flatTops = f
     offset += jaggedness * (random() - 0.5);
     let y = baseY - offset * amplitude;
     if (flatTops) y = Math.round(y / 14) * 14;
-    points.push(`${x},${Math.max(4, Math.min(BIOME_ART_HEIGHT, y)).toFixed(1)}`);
+    points.push(`${x},${roundForSvg(Math.max(4, Math.min(BIOME_ART_HEIGHT, y)))}`);
   }
   return `M0,${BIOME_ART_HEIGHT} L${points.join(' L')} L${BIOME_ART_WIDTH},${BIOME_ART_HEIGHT} Z`;
 }
 
-// A ridge as an SVG path in one colour.
-function buildRidge(random, colour, shape) {
-  return createSvgElement('path', { d: buildRidgePath(random, shape), fill: colour });
+// A band of hills in one colour.
+function paintHills(canvas, colour, shape, kind = 'hills') {
+  canvas.add(createSvgElement('path', { class: `art-${kind}`, d: buildRidgePath(canvas.random, shape), fill: colour }));
 }
 
-// The terrain-specific shapes drawn in front of the far hills.
-function buildBiomeFeatures(terrain, colours, random) {
-  const shapes = [];
-  const count = (low, high) => Math.round(randomBetween(random, low, high));
-  switch (terrain) {
-    case 'forest':
-    case 'hills':
-      shapes.push(buildRidge(random, colours.near, { baseY: 118, amplitude: 16 }));
-      for (let tree = 0, total = terrain === 'forest' ? count(14, 20) : count(3, 6); tree < total; tree++) {
-        const x = randomBetween(random, 0, BIOME_ART_WIDTH);
-        const baseY = randomBetween(random, 118, 146);
-        const height = randomBetween(random, 16, 34);
-        shapes.push(createSvgElement('polygon', { fill: colours.feature,
-          points: `${x.toFixed(1)},${(baseY - height).toFixed(1)} ${(x - height / 3).toFixed(1)},${baseY.toFixed(1)} ${(x + height / 3).toFixed(1)},${baseY.toFixed(1)}` }));
-      }
-      break;
-    case 'ice':
-      for (let spike = 0, total = count(6, 10); spike < total; spike++) {
-        const x = randomBetween(random, 0, BIOME_ART_WIDTH);
-        const height = randomBetween(random, 30, 70);
-        shapes.push(createSvgElement('polygon', { fill: colours.feature, opacity: 0.9,
-          points: `${x.toFixed(1)},${(130 - height).toFixed(1)} ${(x - height / 4).toFixed(1)},130 ${(x + height / 4).toFixed(1)},130` }));
-      }
-      shapes.push(buildRidge(random, colours.near, { baseY: 128, amplitude: 8 }));
-      break;
-    case 'dunes':
-    case 'oasis':
-      shapes.push(buildRidge(random, colours.near, { baseY: 124, amplitude: 14 }));
-      if (terrain === 'oasis') {
-        const waterX = randomBetween(random, 120, 340);
-        shapes.push(createSvgElement('ellipse', { cx: waterX, cy: 136, rx: 70, ry: 7, fill: colours.feature }));
-        const trunkX = waterX + randomBetween(random, -60, 60);
-        shapes.push(createSvgElement('path', { d: `M${trunkX},138 Q${trunkX + 6},112 ${trunkX + 2},92`, stroke: colours.near, 'stroke-width': 4, fill: 'none' }));
-        for (const [dx, dy] of [[-22, 6], [22, 6], [-14, -4], [16, -4]]) {
-          shapes.push(createSvgElement('path', { d: `M${trunkX + 2},92 Q${trunkX + 2 + dx / 2},${86 + dy / 2} ${trunkX + 2 + dx},${92 + dy}`, stroke: colours.feature, 'stroke-width': 4, fill: 'none', 'stroke-linecap': 'round' }));
-        }
-      }
-      break;
-    case 'canyon':
-      shapes.push(buildRidge(random, colours.near, { baseY: 122, amplitude: 26, flatTops: true }));
-      break;
-    case 'swamp':
-      shapes.push(createSvgElement('rect', { x: 0, y: 118, width: BIOME_ART_WIDTH, height: 30, fill: colours.feature }));
-      for (let ripple = 0; ripple < 6; ripple++) {
-        const x = randomBetween(random, 0, BIOME_ART_WIDTH - 60);
-        const y = randomBetween(random, 124, 144);
-        shapes.push(createSvgElement('line', { x1: x, y1: y, x2: x + randomBetween(random, 20, 60), y2: y, stroke: colours.light, 'stroke-opacity': 0.25, 'stroke-width': 1.5 }));
-      }
-      for (let reed = 0, total = count(10, 18); reed < total; reed++) {
-        const x = randomBetween(random, 0, BIOME_ART_WIDTH);
-        shapes.push(createSvgElement('line', { x1: x, y1: 124, x2: x + randomBetween(random, -4, 4), y2: randomBetween(random, 96, 112), stroke: colours.near, 'stroke-width': 2.5, 'stroke-linecap': 'round' }));
-      }
-      break;
-    case 'lava':
-      // a soft glow on the horizon, behind the near peaks
-      shapes.push(createSvgElement('ellipse', { cx: BIOME_ART_WIDTH / 2, cy: 112, rx: BIOME_ART_WIDTH * 0.6, ry: 16, fill: colours.feature, opacity: 0.16 }));
-      shapes.push(buildRidge(random, colours.near, { baseY: 120, amplitude: 36, jaggedness: 1.2 }));
-      shapes.push(createSvgElement('path', { d: `M-10,${randomBetween(random, 132, 142)} Q${randomBetween(random, 120, 340)},${randomBetween(random, 118, 146)} 470,${randomBetween(random, 130, 144)}`, stroke: colours.feature, 'stroke-width': 4, fill: 'none', opacity: 0.9 }));
-      break;
-    case 'city':
-    case 'factory': {
-      let x = 0;
+// A mountain range of separate peaks, each with a sunlit and a shaded face,
+// optionally snow-capped.
+function paintPeaks(canvas, { colour, baseY, minHeight, maxHeight, count = 6, snow = null, sharpness = 0.5 }) {
+  const shade = mixColours(colour, '#000000', 0.22);
+  const peaks = [];
+  for (let peak = 0; peak < count; peak++) {
+    const x = canvas.between(-40, BIOME_ART_WIDTH + 40);
+    const height = canvas.between(minHeight, maxHeight);
+    const halfWidth = height * canvas.between(1.1, 2.2) * (1.2 - sharpness);
+    const topY = baseY - height;
+    const shoulder = canvas.between(-0.25, 0.25) * halfWidth;
+    peaks.push(createSvgElement('path', { fill: colour,
+      d: `M${roundForSvg(x - halfWidth)},${baseY} L${roundForSvg(x + shoulder - halfWidth * 0.3)},${roundForSvg(topY + height * 0.35)} L${roundForSvg(x)},${roundForSvg(topY)} L${roundForSvg(x + halfWidth * 0.35)},${roundForSvg(topY + height * 0.3)} L${roundForSvg(x + halfWidth)},${baseY} Z` }));
+    peaks.push(createSvgElement('path', { fill: shade,
+      d: `M${roundForSvg(x)},${roundForSvg(topY)} L${roundForSvg(x + halfWidth * 0.35)},${roundForSvg(topY + height * 0.3)} L${roundForSvg(x + halfWidth)},${baseY} L${roundForSvg(x + halfWidth * 0.12)},${baseY} Z` }));
+    if (snow) {
+      peaks.push(createSvgElement('path', { fill: snow,
+        d: `M${roundForSvg(x - halfWidth * 0.22)},${roundForSvg(topY + height * 0.2)} L${roundForSvg(x)},${roundForSvg(topY)} L${roundForSvg(x + halfWidth * 0.2)},${roundForSvg(topY + height * 0.18)} L${roundForSvg(x + halfWidth * 0.05)},${roundForSvg(topY + height * 0.26)} Z` }));
+    }
+  }
+  canvas.add(artGroup('peaks', peaks));
+}
+
+// The ground from a height down to the bottom edge, darker towards the viewer.
+function paintGround(canvas, { y, top, bottom }) {
+  canvas.add(createSvgElement('rect', { class: 'art-ground', x: 0, y, width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT - y,
+    fill: addArtGradient(canvas, [['0%', top], ['100%', bottom]]) }));
+}
+
+// A band of sea or lake on the horizon, with a few glints.
+function paintWater(canvas, { y, height, colour, glint = '#ffffff' }) {
+  let glints = '';
+  for (let line = 0; line < 6; line++) {
+    const x = canvas.between(0, BIOME_ART_WIDTH - 40);
+    glints += `M${roundForSvg(x)},${roundForSvg(y + canvas.between(1, height - 1))}h${roundForSvg(canvas.between(10, 40))}`;
+  }
+  canvas.add(artGroup('water', [
+    createSvgElement('rect', { x: 0, y, width: BIOME_ART_WIDTH, height, fill: colour }),
+    createSvgElement('path', { d: glints, stroke: glint, 'stroke-width': 0.8, opacity: 0.3 }),
+  ]));
+}
+
+// A stream winding from the far hills down to the front edge, widening as it
+// comes nearer.
+function paintStream(canvas, { colour, startY, glint = '#ffffff' }) {
+  const startX = canvas.between(110, 350);
+  const endX = startX + canvas.between(-110, 110);
+  const phase = canvas.between(0, Math.PI * 2);
+  const leftEdge = [];
+  const rightEdge = [];
+  for (let step = 0; step <= 8; step++) {
+    const nearness = step / 8;
+    const y = startY + (BIOME_ART_HEIGHT + 2 - startY) * nearness;
+    const centre = startX + (endX - startX) * nearness + Math.sin(nearness * Math.PI * 2.2 + phase) * 26 * nearness;
+    const halfWidth = 0.8 + nearness * nearness * 15;
+    leftEdge.push([centre - halfWidth, y]);
+    rightEdge.push([centre + halfWidth, y]);
+  }
+  const glints = leftEdge.slice(3).map(([x, y], step) => `M${roundForSvg(x + 3 + step * 2)},${roundForSvg(y)}h${roundForSvg(3 + step * 2)}`).join('');
+  canvas.add(artGroup('stream', [
+    createSvgElement('path', { d: buildRibbonPath(leftEdge, rightEdge), fill: colour, opacity: 0.9 }),
+    createSvgElement('path', { d: glints, stroke: glint, 'stroke-width': 0.8, opacity: 0.45 }),
+  ]));
+}
+
+// Tufts of grass as one path of short strokes.
+function paintGrass(canvas, { colour, count = 40, minY, maxY, height = 5, width = 1 }) {
+  let blades = '';
+  for (const { x, y, depth } of scatterByDepth(canvas, count, { minY, maxY })) {
+    const size = height * (0.5 + depth * 0.7);
+    blades += `M${roundForSvg(x - 2)},${roundForSvg(y)}l1,${roundForSvg(-size * 0.8)}M${roundForSvg(x)},${roundForSvg(y)}l0,${roundForSvg(-size)}M${roundForSvg(x + 2)},${roundForSvg(y)}l-1,${roundForSvg(-size * 0.8)}`;
+  }
+  canvas.add(artGroup('grass', [createSvgElement('path', { d: blades, stroke: colour, 'stroke-width': width, 'stroke-linecap': 'round', fill: 'none' })]));
+}
+
+// Dots of flowers, one path per colour.
+function paintFlowers(canvas, { colours, count = 30, minY, maxY, size = 1.8 }) {
+  const paths = colours.map(colour => {
+    let dots = '';
+    for (const { x, y, depth } of scatterByDepth(canvas, Math.ceil(count / colours.length), { minY, maxY })) {
+      dots += `M${roundForSvg(x)},${roundForSvg(y)}h0.1`;
+      if (depth > 0.7) dots += `M${roundForSvg(x + 2)},${roundForSvg(y + 1)}h0.1`;
+    }
+    return createSvgElement('path', { d: dots, stroke: colour, 'stroke-width': size, 'stroke-linecap': 'round' });
+  });
+  canvas.add(artGroup('flowers', paths));
+}
+
+// ── Plants ──
+
+// A pine: three stacked tiers on a short trunk, with snow on top if asked.
+function buildPineTree(x, baseY, height, { leaves, trunk, snow = null }) {
+  const parts = [createSvgElement('rect', { x: roundForSvg(x - height * 0.04), y: roundForSvg(baseY - height * 0.2), width: roundForSvg(height * 0.08), height: roundForSvg(height * 0.2), fill: trunk })];
+  for (let tier = 0; tier < 3; tier++) {
+    const top = baseY - height + tier * height * 0.24;
+    const bottom = top + height * 0.42;
+    const halfWidth = height * 0.3 * (0.55 + tier * 0.25);
+    parts.push(createSvgElement('polygon', { fill: leaves,
+      points: `${roundForSvg(x)},${roundForSvg(top)} ${roundForSvg(x - halfWidth)},${roundForSvg(bottom)} ${roundForSvg(x + halfWidth)},${roundForSvg(bottom)}` }));
+    if (snow) {
+      const snowLine = top + (bottom - top) * 0.4;
+      parts.push(createSvgElement('polygon', { fill: snow,
+        points: `${roundForSvg(x)},${roundForSvg(top)} ${roundForSvg(x - halfWidth * 0.4)},${roundForSvg(snowLine)} ${roundForSvg(x + halfWidth * 0.4)},${roundForSvg(snowLine)}` }));
+    }
+  }
+  return artGroup('pine-tree', parts);
+}
+
+// A broadleaf tree: a trunk with two limbs under a round, leafy crown.
+function buildBroadleafTree(canvas, x, baseY, height, { leaves, trunk }) {
+  const trunkWidth = Math.max(1.4, height * 0.08);
+  const crownY = baseY - height * 0.62;
+  const crownRadius = height * 0.27;
+  const [dark, middle, light] = leaves;
+  const blob = (dx, dy, scale, fill) => createSvgElement('circle', {
+    cx: roundForSvg(x + dx * crownRadius + canvas.between(-1, 1)), cy: roundForSvg(crownY + dy * crownRadius + canvas.between(-1, 1)),
+    r: roundForSvg(crownRadius * scale), fill });
+  return artGroup('broadleaf-tree', [
+    createSvgElement('path', { fill: trunk, d: `M${roundForSvg(x - trunkWidth / 2)},${roundForSvg(baseY)} L${roundForSvg(x - trunkWidth * 0.3)},${roundForSvg(crownY)} L${roundForSvg(x + trunkWidth * 0.3)},${roundForSvg(crownY)} L${roundForSvg(x + trunkWidth / 2)},${roundForSvg(baseY)} Z` }),
+    createSvgElement('path', { stroke: trunk, 'stroke-width': roundForSvg(trunkWidth * 0.45), 'stroke-linecap': 'round', fill: 'none',
+      d: `M${roundForSvg(x)},${roundForSvg(baseY - height * 0.4)} L${roundForSvg(x - crownRadius * 0.6)},${roundForSvg(crownY + crownRadius * 0.2)} M${roundForSvg(x)},${roundForSvg(baseY - height * 0.45)} L${roundForSvg(x + crownRadius * 0.55)},${roundForSvg(crownY + crownRadius * 0.1)}` }),
+    blob(-0.7, 0.3, 0.72, dark), blob(0.7, 0.28, 0.75, dark), blob(0, 0.15, 0.85, dark),
+    blob(-0.35, -0.3, 0.72, middle), blob(0.4, -0.25, 0.7, middle), blob(0.05, -0.55, 0.6, middle),
+    blob(-0.35, -0.5, 0.35, light), blob(0.2, -0.7, 0.3, light),
+  ]);
+}
+
+// A tall tropical jungle tree: a slender, slightly bent trunk that forks into
+// a dome of leafy clumps, with lianas hanging from it.
+function buildJungleTree(canvas, x, baseY, height, { leaves, trunk, vine = leaves[0] }) {
+  const bend = canvas.between(-0.1, 0.1) * height;
+  const topX = x + bend;
+  const crownY = baseY - height * 0.72;
+  const spread = height * canvas.between(0.24, 0.32);
+  const trunkWidth = Math.max(1.2, height * 0.045);
+  const [dark, middle, light] = leaves;
+  const clump = (across, rise, radius, fill) => createSvgElement('ellipse', {
+    cx: roundForSvg(topX + across * spread + canvas.between(-1, 1)), cy: roundForSvg(crownY - rise * height + canvas.between(-1, 1)),
+    rx: roundForSvg(radius * spread), ry: roundForSvg(radius * spread * 0.8), fill });
+  const forkY = crownY + height * 0.1;
+  let lianas = '';
+  for (let liana = 0; liana < 3; liana++) {
+    const lianaX = topX + canvas.between(-0.8, 0.8) * spread;
+    lianas += `M${roundForSvg(lianaX)},${roundForSvg(crownY + height * 0.02)} q${roundForSvg(canvas.between(-2, 2))},${roundForSvg(height * 0.1)} ${roundForSvg(canvas.between(-1.5, 1.5))},${roundForSvg(height * canvas.between(0.12, 0.3))}`;
+  }
+  return artGroup('jungle-tree', [
+    createSvgElement('path', { stroke: trunk, 'stroke-width': roundForSvg(trunkWidth), fill: 'none', 'stroke-linecap': 'round',
+      d: `M${roundForSvg(x)},${roundForSvg(baseY)} Q${roundForSvg(x + bend * 1.4)},${roundForSvg(baseY - height * 0.4)} ${roundForSvg(topX)},${roundForSvg(forkY)}` }),
+    createSvgElement('path', { stroke: trunk, 'stroke-width': roundForSvg(trunkWidth * 0.6), fill: 'none', 'stroke-linecap': 'round',
+      d: `M${roundForSvg(topX)},${roundForSvg(forkY)} Q${roundForSvg(topX - spread * 0.3)},${roundForSvg(crownY + height * 0.04)} ${roundForSvg(topX - spread * 0.7)},${roundForSvg(crownY)}` +
+        ` M${roundForSvg(topX)},${roundForSvg(forkY)} Q${roundForSvg(topX + spread * 0.3)},${roundForSvg(crownY + height * 0.03)} ${roundForSvg(topX + spread * 0.68)},${roundForSvg(crownY - height * 0.01)}` }),
+    clump(-0.75, 0, 0.42, dark), clump(0.75, 0.01, 0.42, dark), clump(-0.3, 0.02, 0.48, dark), clump(0.3, 0.03, 0.46, dark),
+    clump(-0.45, 0.1, 0.4, middle), clump(0.4, 0.11, 0.4, middle), clump(0, 0.16, 0.44, middle),
+    clump(-0.2, 0.22, 0.24, light), clump(0.22, 0.2, 0.2, light),
+    createSvgElement('path', { d: lianas, stroke: vine, 'stroke-width': 0.8, fill: 'none', opacity: 0.85 }),
+  ]);
+}
+
+// The unbroken roof of a jungle seen from afar: overlapping rounded treetops
+// rising and falling along the horizon, lit a little on top.
+function paintCanopy(canvas, { baseY, height, colours }) {
+  const [dark, middle] = colours;
+  const phase = canvas.between(0, Math.PI * 2);
+  const crowns = [];
+  const lights = [];
+  for (let x = -10; x <= BIOME_ART_WIDTH + 10; x += canvas.between(6, 10)) {
+    const radius = canvas.between(5, 11);
+    const top = baseY - height * (0.6 + 0.3 * Math.sin(x / 70 + phase)) - canvas.between(0, height * 0.25);
+    crowns.push(createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(top + radius), r: roundForSvg(radius), fill: dark }));
+    if (canvas.chance(0.45)) {
+      lights.push(createSvgElement('ellipse', { cx: roundForSvg(x - radius * 0.25), cy: roundForSvg(top + radius * 0.55),
+        rx: roundForSvg(radius * 0.55), ry: roundForSvg(radius * 0.35), fill: middle, opacity: 0.7 }));
+    }
+  }
+  canvas.add(artGroup('canopy', [
+    createSvgElement('rect', { x: 0, y: roundForSvg(baseY - height * 0.3), width: BIOME_ART_WIDTH, height: roundForSvg(height * 0.3 + 10), fill: dark }),
+    ...crowns, ...lights,
+  ]));
+}
+
+// A palm: a curved trunk and drooping fronds.
+function buildPalmTree(canvas, x, baseY, height, { trunk, fronds, droop = 0.5 }) {
+  const lean = canvas.between(-0.3, 0.3) * height;
+  const topX = x + lean;
+  const topY = baseY - height;
+  let leaves = '';
+  for (let frond = 0; frond < 7; frond++) {
+    const angle = Math.PI * (1.05 + frond * 0.15);
+    const length = height * canvas.between(0.35, 0.5);
+    const endX = topX + Math.cos(angle) * length;
+    const endY = topY + Math.sin(angle) * length * 0.35 + length * droop;
+    leaves += `M${roundForSvg(topX)},${roundForSvg(topY)} Q${roundForSvg((topX + endX) / 2)},${roundForSvg(topY - length * 0.3)} ${roundForSvg(endX)},${roundForSvg(endY)}`;
+  }
+  return artGroup('palm-tree', [
+    createSvgElement('path', { stroke: trunk, 'stroke-width': roundForSvg(Math.max(1.5, height * 0.06)), fill: 'none', 'stroke-linecap': 'round',
+      d: `M${roundForSvg(x)},${roundForSvg(baseY)} Q${roundForSvg(x + lean * 0.2)},${roundForSvg(baseY - height * 0.6)} ${roundForSvg(topX)},${roundForSvg(topY)}` }),
+    createSvgElement('path', { d: leaves, stroke: fronds, 'stroke-width': roundForSvg(Math.max(1.4, height * 0.05)), fill: 'none', 'stroke-linecap': 'round' }),
+  ]);
+}
+
+// A massive gnarled swamp tree, like a mangrove: arching prop roots, a thick
+// crooked trunk, a heavy rounded crown of clumps and moss hanging from it.
+function buildGnarledTree(canvas, x, baseY, height, { trunk, leaves, vine }) {
+  const width = height * 0.075;
+  const lean = canvas.between(-0.08, 0.08) * height;
+  const crownX = x + lean;
+  const crownY = baseY - height * 0.7;
+  const rootTop = baseY - height * 0.2;
+  const [dark, middle] = leaves;
+  let roots = '';
+  for (let root = 0; root < 6; root++) {
+    const side = root % 2 ? 1 : -1;
+    const reach = width * canvas.between(1.4, 4);
+    const fromY = rootTop + canvas.between(0, height * 0.1);
+    roots += `M${roundForSvg(x + side * width * 0.3)},${roundForSvg(fromY)} Q${roundForSvg(x + side * reach * 0.85)},${roundForSvg(fromY - height * 0.05)} ${roundForSvg(x + side * reach)},${roundForSvg(baseY)}`;
+  }
+  const trunkShape = `M${roundForSvg(x - width * 0.7)},${roundForSvg(rootTop + height * 0.08)}` +
+    ` C${roundForSvg(x - width * 1.1)},${roundForSvg(baseY - height * 0.42)} ${roundForSvg(crownX - width * 1.1)},${roundForSvg(crownY + height * 0.16)} ${roundForSvg(crownX - width * 0.45)},${roundForSvg(crownY)}` +
+    ` L${roundForSvg(crownX + width * 0.45)},${roundForSvg(crownY)}` +
+    ` C${roundForSvg(crownX + width * 1.1)},${roundForSvg(crownY + height * 0.16)} ${roundForSvg(x + width * 1.1)},${roundForSvg(baseY - height * 0.42)} ${roundForSvg(x + width * 0.7)},${roundForSvg(rootTop + height * 0.08)} Z`;
+  const limbs = `M${roundForSvg(crownX)},${roundForSvg(crownY + height * 0.06)} q${roundForSvg(-height * 0.1)},${roundForSvg(-height * 0.02)} ${roundForSvg(-height * 0.2)},${roundForSvg(-height * 0.1)}` +
+    ` M${roundForSvg(crownX)},${roundForSvg(crownY + height * 0.04)} q${roundForSvg(height * 0.1)},${roundForSvg(-height * 0.03)} ${roundForSvg(height * 0.22)},${roundForSvg(-height * 0.09)}`;
+  const crown = [];
+  for (let clump = 0; clump < 7; clump++) {
+    const angle = Math.PI * clump / 6;
+    crown.push(createSvgElement('ellipse', {
+      cx: roundForSvg(crownX + Math.cos(angle) * height * 0.28 * canvas.between(0.75, 1)),
+      cy: roundForSvg(crownY - Math.sin(angle) * height * 0.13 - height * 0.02 + canvas.between(-2, 2)),
+      rx: roundForSvg(height * canvas.between(0.13, 0.18)), ry: roundForSvg(height * canvas.between(0.07, 0.1)), fill: clump % 2 ? middle : dark }));
+  }
+  crown.push(createSvgElement('ellipse', { cx: roundForSvg(crownX), cy: roundForSvg(crownY - height * 0.1), rx: roundForSvg(height * 0.22), ry: roundForSvg(height * 0.1), fill: dark }));
+  crown.push(createSvgElement('ellipse', { cx: roundForSvg(crownX - height * 0.05), cy: roundForSvg(crownY - height * 0.16), rx: roundForSvg(height * 0.12), ry: roundForSvg(height * 0.05), fill: middle }));
+  let moss = '';
+  for (let strand = 0; strand < 8; strand++) {
+    const strandX = crownX + canvas.between(-0.38, 0.38) * height;
+    const strandTop = crownY + canvas.between(-0.02, 0.04) * height;
+    moss += `M${roundForSvg(strandX)},${roundForSvg(strandTop)} q${roundForSvg(canvas.between(-2, 2))},${roundForSvg(height * 0.08)} ${roundForSvg(canvas.between(-1, 1))},${roundForSvg(height * canvas.between(0.1, 0.3))}`;
+  }
+  return artGroup('gnarled-tree', [
+    createSvgElement('path', { d: roots, stroke: trunk, 'stroke-width': roundForSvg(Math.max(1, width * 0.45)), fill: 'none', 'stroke-linecap': 'round' }),
+    createSvgElement('path', { d: trunkShape, fill: trunk }),
+    createSvgElement('path', { d: limbs, stroke: trunk, 'stroke-width': roundForSvg(Math.max(1, width * 0.4)), fill: 'none', 'stroke-linecap': 'round' }),
+    ...crown,
+    createSvgElement('path', { d: moss, stroke: vine, 'stroke-width': 0.9, fill: 'none', opacity: 0.9 }),
+  ]);
+}
+
+// A cluster of pale swamp mushrooms.
+function buildMushrooms(canvas, x, baseY, size, { cap, stem }) {
+  const parts = [];
+  for (let mushroom = 0; mushroom < 3; mushroom++) {
+    const mushroomX = x + (mushroom - 1) * size * 0.9 + canvas.between(-1, 1);
+    const height = size * canvas.between(0.6, 1.1);
+    const capRadius = size * canvas.between(0.35, 0.55);
+    parts.push(createSvgElement('rect', { x: roundForSvg(mushroomX - size * 0.08), y: roundForSvg(baseY - height), width: roundForSvg(size * 0.16), height: roundForSvg(height), fill: stem }));
+    parts.push(createSvgElement('path', { fill: cap,
+      d: `M${roundForSvg(mushroomX - capRadius)},${roundForSvg(baseY - height + 0.5)} a${roundForSvg(capRadius)},${roundForSvg(capRadius * 0.8)} 0 0 1 ${roundForSvg(capRadius * 2)},0 Z` }));
+  }
+  return artGroup('mushrooms', parts);
+}
+
+// A leafless tree: a crooked trunk that forks twice. Used for charred trees on the
+// Scorched Moor, grey dead trees in the Deadlands and twisted haunted-swamp trees.
+// blossoms adds the Deadlands' violet parasitic flowers on the twig ends.
+function buildBareTree(canvas, x, baseY, height, { colour, twist = 0.3, blossoms = null, broken = false }) {
+  const levels = [[], [], []];
+  const tips = [];
+  const grow = (fromX, fromY, angle, length, level) => {
+    const bendAngle = angle + canvas.between(-twist, twist);
+    const toX = fromX + Math.cos(bendAngle) * length;
+    const toY = fromY + Math.sin(bendAngle) * length;
+    const midX = (fromX + toX) / 2 + canvas.between(-length, length) * twist * 0.4;
+    const midY = (fromY + toY) / 2;
+    levels[level].push(`M${roundForSvg(fromX)},${roundForSvg(fromY)} Q${roundForSvg(midX)},${roundForSvg(midY)} ${roundForSvg(toX)},${roundForSvg(toY)}`);
+    if (level === 2 || (broken && level === 1 && canvas.chance(0.5))) { tips.push([toX, toY]); return; }
+    const forks = level === 0 ? 3 : 2;
+    for (let fork = 0; fork < forks; fork++) {
+      const spreadAngle = (fork - (forks - 1) / 2) * canvas.between(0.45, 0.8);
+      grow(toX, toY, angle + spreadAngle, length * canvas.between(0.45, 0.62), level + 1);
+    }
+  };
+  grow(x, baseY, -Math.PI / 2, height * (broken ? 0.6 : 0.55), 0);
+  const widths = [Math.max(1.2, height * 0.07), Math.max(0.8, height * 0.035), Math.max(0.5, height * 0.018)];
+  const parts = levels.map((segments, level) => createSvgElement('path', {
+    d: segments.join(''), stroke: colour, 'stroke-width': roundForSvg(widths[level]), fill: 'none', 'stroke-linecap': 'round' }));
+  if (blossoms) {
+    const dots = tips.filter(() => canvas.chance(0.6)).map(([tipX, tipY]) => `M${roundForSvg(tipX)},${roundForSvg(tipY)}h0.1`).join('');
+    if (dots) parts.push(createSvgElement('path', { d: dots, stroke: blossoms, 'stroke-width': roundForSvg(Math.max(1.6, height * 0.06)), 'stroke-linecap': 'round' }));
+  }
+  return artGroup('bare-tree', parts);
+}
+
+// Dried-out coral: pale stems fanning up from the ground and forking once.
+function buildCoral(canvas, x, baseY, height, colour) {
+  let stems = '';
+  for (let stem = 0; stem < 4; stem++) {
+    const angle = -Math.PI / 2 + (stem - 1.5) * 0.35 + canvas.between(-0.1, 0.1);
+    const midX = x + Math.cos(angle) * height * 0.55;
+    const midY = baseY + Math.sin(angle) * height * 0.55;
+    stems += `M${roundForSvg(x)},${roundForSvg(baseY)} L${roundForSvg(midX)},${roundForSvg(midY)}`;
+    for (const side of [-0.35, 0.35]) {
+      stems += `M${roundForSvg(midX)},${roundForSvg(midY)} l${roundForSvg(Math.cos(angle + side) * height * 0.4)},${roundForSvg(Math.sin(angle + side) * height * 0.4)}`;
+    }
+  }
+  return artGroup('coral', [createSvgElement('path', { d: stems, stroke: colour, 'stroke-width': roundForSvg(Math.max(1, height * 0.08)), fill: 'none', 'stroke-linecap': 'round' })]);
+}
+
+// A fern: curved fronds fanning out from one point, with a soft glow if asked.
+function buildFern(canvas, x, baseY, size, colour, glow = null) {
+  let fronds = '';
+  for (let frond = 0; frond < 7; frond++) {
+    const angle = Math.PI * (1.08 + frond * 0.14);
+    const length = size * canvas.between(0.7, 1);
+    fronds += `M${roundForSvg(x)},${roundForSvg(baseY)} q${roundForSvg(Math.cos(angle) * length * 0.4)},${roundForSvg(-length * 0.9)} ${roundForSvg(Math.cos(angle) * length)},${roundForSvg(Math.sin(angle) * length * 0.6)}`;
+  }
+  return artGroup('fern', [
+    glow ? createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(baseY - size * 0.3), rx: roundForSvg(size * 1.1), ry: roundForSvg(size * 0.7),
+      fill: addArtGradient(canvas, [['0%', glow, 0.4], ['100%', glow, 0]], true) }) : null,
+    createSvgElement('path', { d: fronds, stroke: colour, 'stroke-width': roundForSvg(Math.max(1, size * 0.14)), fill: 'none', 'stroke-linecap': 'round' }),
+  ]);
+}
+
+// A low, rounded bush of two or three colours.
+function buildShrub(canvas, x, baseY, size, colours) {
+  return artGroup('shrub', [
+    createSvgElement('circle', { cx: roundForSvg(x - size * 0.5), cy: roundForSvg(baseY - size * 0.4), r: roundForSvg(size * 0.55), fill: canvas.pick(colours) }),
+    createSvgElement('circle', { cx: roundForSvg(x + size * 0.45), cy: roundForSvg(baseY - size * 0.38), r: roundForSvg(size * 0.5), fill: canvas.pick(colours) }),
+    createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(baseY - size * 0.72), r: roundForSvg(size * 0.55), fill: canvas.pick(colours) }),
+  ]);
+}
+
+// A tall, dead desert shrub: thin dry twigs.
+function buildDryShrub(canvas, x, baseY, size, colour) {
+  let twigs = '';
+  for (let twig = 0; twig < 6; twig++) {
+    const angle = -Math.PI / 2 + (twig - 2.5) * 0.28;
+    twigs += `M${roundForSvg(x)},${roundForSvg(baseY)} q${roundForSvg(Math.cos(angle) * size * 0.3)},${roundForSvg(-size * 0.5)} ${roundForSvg(Math.cos(angle) * size)},${roundForSvg(Math.sin(angle) * size)}`;
+  }
+  return artGroup('dry-shrub', [createSvgElement('path', { d: twigs, stroke: colour, 'stroke-width': 0.8, fill: 'none', 'stroke-linecap': 'round' })]);
+}
+
+// ── Rocks and landmarks ──
+
+// A rounded boulder with a lit upper edge.
+function buildBoulder(x, baseY, width, height, { rock, light }) {
+  return artGroup('boulder', [
+    createSvgElement('path', { fill: rock, d: `M${roundForSvg(x - width)},${roundForSvg(baseY)} C${roundForSvg(x - width)},${roundForSvg(baseY - height * 0.8)} ${roundForSvg(x - width * 0.4)},${roundForSvg(baseY - height)} ${roundForSvg(x)},${roundForSvg(baseY - height)} C${roundForSvg(x + width * 0.55)},${roundForSvg(baseY - height)} ${roundForSvg(x + width)},${roundForSvg(baseY - height * 0.6)} ${roundForSvg(x + width)},${roundForSvg(baseY)} Z` }),
+    createSvgElement('path', { fill: light, opacity: 0.45, d: `M${roundForSvg(x - width * 0.7)},${roundForSvg(baseY - height * 0.55)} C${roundForSvg(x - width * 0.6)},${roundForSvg(baseY - height * 0.9)} ${roundForSvg(x - width * 0.1)},${roundForSvg(baseY - height * 0.95)} ${roundForSvg(x + width * 0.2)},${roundForSvg(baseY - height * 0.85)} Z` }),
+  ]);
+}
+
+// A tall rock pillar with a lit side and an optional cap (moss or snow).
+function buildRockPillar(canvas, x, baseY, width, height, { rock, light, cap = null }) {
+  const top = baseY - height;
+  const tilt = canvas.between(-0.15, 0.15) * width;
+  return artGroup('rock-pillar', [
+    createSvgElement('polygon', { fill: rock, points: `${roundForSvg(x - width / 2)},${roundForSvg(baseY)} ${roundForSvg(x - width * 0.38 + tilt)},${roundForSvg(top + 2)} ${roundForSvg(x + tilt)},${roundForSvg(top)} ${roundForSvg(x + width * 0.36 + tilt)},${roundForSvg(top + 3)} ${roundForSvg(x + width / 2)},${roundForSvg(baseY)}` }),
+    createSvgElement('polygon', { fill: light, opacity: 0.4, points: `${roundForSvg(x - width / 2)},${roundForSvg(baseY)} ${roundForSvg(x - width * 0.38 + tilt)},${roundForSvg(top + 2)} ${roundForSvg(x - width * 0.12 + tilt)},${roundForSvg(top + 1)} ${roundForSvg(x - width * 0.2)},${roundForSvg(baseY)}` }),
+    cap ? createSvgElement('polygon', { fill: cap, points: `${roundForSvg(x - width * 0.4 + tilt)},${roundForSvg(top + 4)} ${roundForSvg(x + tilt)},${roundForSvg(top - 1)} ${roundForSvg(x + width * 0.38 + tilt)},${roundForSvg(top + 5)} ${roundForSvg(x + tilt)},${roundForSvg(top + 7)}` }) : null,
+  ]);
+}
+
+// A huge flat-topped rock formation with horizontal layers in its face.
+function buildMesa(canvas, x, baseY, width, height, { rock, light, strata }) {
+  const top = baseY - height;
+  const leftTop = x - width * canvas.between(0.3, 0.4);
+  const rightTop = x + width * canvas.between(0.3, 0.4);
+  let layers = '';
+  for (let layer = 1; layer < 4; layer++) layers += `M${roundForSvg(x - width * 0.45)},${roundForSvg(top + height * layer / 4)}h${roundForSvg(width * 0.9)}`;
+  return artGroup('mesa', [
+    createSvgElement('polygon', { fill: rock, points: `${roundForSvg(x - width / 2)},${roundForSvg(baseY)} ${roundForSvg(leftTop)},${roundForSvg(top + 3)} ${roundForSvg(leftTop + 4)},${roundForSvg(top)} ${roundForSvg(rightTop - 3)},${roundForSvg(top)} ${roundForSvg(rightTop)},${roundForSvg(top + 4)} ${roundForSvg(x + width / 2)},${roundForSvg(baseY)}` }),
+    createSvgElement('polygon', { fill: light, opacity: 0.35, points: `${roundForSvg(x - width / 2)},${roundForSvg(baseY)} ${roundForSvg(leftTop)},${roundForSvg(top + 3)} ${roundForSvg(leftTop + 4)},${roundForSvg(top)} ${roundForSvg(x - width * 0.15)},${roundForSvg(top)} ${roundForSvg(x - width * 0.25)},${roundForSvg(baseY)}` }),
+    createSvgElement('path', { d: layers, stroke: strata, 'stroke-width': 1, opacity: 0.5 }),
+  ]);
+}
+
+// Ice spikes pointing up out of the snow.
+function buildIcicles(canvas, x, baseY, size, { ice, light }) {
+  const spikes = [];
+  for (let spike = 0; spike < 5; spike++) {
+    const spikeX = x + (spike - 2) * size * 0.28 + canvas.between(-2, 2);
+    const height = size * canvas.between(0.5, 1.1);
+    const halfWidth = size * 0.09;
+    spikes.push(createSvgElement('polygon', { fill: spike % 2 ? light : ice,
+      points: `${roundForSvg(spikeX - halfWidth)},${roundForSvg(baseY)} ${roundForSvg(spikeX + canvas.between(-1, 1))},${roundForSvg(baseY - height)} ${roundForSvg(spikeX + halfWidth)},${roundForSvg(baseY)}` }));
+  }
+  return artGroup('icicles', spikes);
+}
+
+// A tall organic Terminid spire with ribs.
+function buildTerminidSpire(canvas, x, baseY, height, { matter, ridge }) {
+  const width = height * canvas.between(0.12, 0.18);
+  const lean = canvas.between(-0.15, 0.15) * height;
+  let ribs = '';
+  for (let rib = 1; rib < 5; rib++) {
+    const ribY = baseY - height * rib / 5;
+    const ribWidth = width * (1 - rib / 6);
+    ribs += `M${roundForSvg(x + lean * rib / 5 - ribWidth)},${roundForSvg(ribY)} q${roundForSvg(ribWidth)},3 ${roundForSvg(ribWidth * 2)},0`;
+  }
+  return artGroup('terminid-spire', [
+    createSvgElement('path', { fill: matter, d: `M${roundForSvg(x - width)},${roundForSvg(baseY)} Q${roundForSvg(x - width * 0.5 + lean * 0.4)},${roundForSvg(baseY - height * 0.55)} ${roundForSvg(x + lean)},${roundForSvg(baseY - height)} Q${roundForSvg(x + width * 0.5 + lean * 0.4)},${roundForSvg(baseY - height * 0.5)} ${roundForSvg(x + width)},${roundForSvg(baseY)} Z` }),
+    createSvgElement('path', { d: ribs, stroke: ridge, 'stroke-width': 1, fill: 'none', opacity: 0.7 }),
+  ]);
+}
+
+// A rounded hive mound with a dark opening.
+function buildHiveMound(x, baseY, width, height, { matter, hole }) {
+  return artGroup('hive-mound', [
+    createSvgElement('path', { fill: matter, d: `M${roundForSvg(x - width / 2)},${roundForSvg(baseY)} Q${roundForSvg(x)},${roundForSvg(baseY - height * 2)} ${roundForSvg(x + width / 2)},${roundForSvg(baseY)} Z` }),
+    createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(baseY - height * 0.5), rx: roundForSvg(width * 0.1), ry: roundForSvg(height * 0.14), fill: hole }),
+  ]);
+}
+
+// A volcano: a cone with a glowing crater, lava running down and a smoke plume.
+function buildVolcano(canvas, x, baseY, width, height, { rock, glow, smoke }) {
+  const top = baseY - height;
+  const crater = width * 0.14;
+  const puffs = [];
+  for (let puff = 0; puff < 6; puff++) {
+    puffs.push(createSvgElement('circle', { cx: roundForSvg(x + puff * canvas.between(3, 7)), cy: roundForSvg(top - 6 - puff * 7),
+      r: roundForSvg(5 + puff * 2.5), fill: smoke, opacity: roundForSvg(0.5 - puff * 0.06) }));
+  }
+  // Lava runs down the slope from the crater's rim, so it leans out as the cone does.
+  const lavaFlows = [-1, 1].filter(() => canvas.chance(0.8)).map(side => {
+    const startX = x + side * crater * canvas.between(0.2, 0.7);
+    const length = height * canvas.between(0.3, 0.6);
+    const slope = (width - crater) / height;
+    const leftEdge = [];
+    const rightEdge = [];
+    for (let step = 0; step <= 4; step++) {
+      const down = step / 4;
+      const flowX = startX + side * slope * length * down * 0.8 + Math.sin(down * 6) * 1.2;
+      const halfWidth = 0.5 + down * 1.2;
+      leftEdge.push([flowX - halfWidth, top + length * down]);
+      rightEdge.push([flowX + halfWidth, top + length * down]);
+    }
+    return createSvgElement('path', { d: buildRibbonPath(leftEdge, rightEdge), fill: glow, opacity: 0.8 });
+  });
+  return artGroup('volcano', [
+    ...puffs,
+    createSvgElement('polygon', { fill: rock, points: `${roundForSvg(x - width)},${roundForSvg(baseY)} ${roundForSvg(x - crater)},${roundForSvg(top)} ${roundForSvg(x + crater)},${roundForSvg(top)} ${roundForSvg(x + width)},${roundForSvg(baseY)}` }),
+    createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(top), rx: roundForSvg(crater * 1.1), ry: 2.5, fill: glow }),
+    ...lavaFlows,
+  ]);
+}
+
+// A pool of magma: a soft glow, the molten surface and a bright core.
+function buildLavaPool(canvas, x, y, width, { lava, core, glow }) {
+  return artGroup('lava-pool', [
+    createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(width), ry: roundForSvg(width * 0.28), fill: addArtGradient(canvas, [['0%', glow, 0.55], ['100%', glow, 0]], true) }),
+    createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(width * 0.5), ry: roundForSvg(width * 0.12), fill: lava }),
+    createSvgElement('ellipse', { cx: roundForSvg(x - width * 0.08), cy: roundForSvg(y - width * 0.02), rx: roundForSvg(width * 0.26), ry: roundForSvg(width * 0.05), fill: core }),
+  ]);
+}
+
+// A fire tornado: a twisting column of flame, wider at the top, glowing where
+// it touches the ground, with smoke above.
+function buildFireTornado(canvas, x, baseY, height) {
+  const sway = canvas.between(-0.2, 0.2) * height;
+  const phase = canvas.between(0, Math.PI * 2);
+  const leftEdge = [];
+  const rightEdge = [];
+  let swirls = '';
+  for (let step = 0; step <= 6; step++) {
+    const rise = step / 6;
+    const y = baseY - height * rise;
+    const centre = x + sway * rise * rise + Math.sin(rise * 7 + phase) * 3;
+    const halfWidth = 1.5 + height * 0.2 * rise ** 1.4;
+    leftEdge.push([centre - halfWidth, y]);
+    rightEdge.push([centre + halfWidth, y]);
+    if (step > 0 && step < 6) swirls += `M${roundForSvg(centre - halfWidth * 0.9)},${roundForSvg(y + 2)} q${roundForSvg(halfWidth)},${roundForSvg(-3)} ${roundForSvg(halfWidth * 1.8)},${roundForSvg(-1)}`;
+  }
+  const [topX, topY] = [(leftEdge[6][0] + rightEdge[6][0]) / 2, leftEdge[6][1]];
+  const smoke = [0, 1, 2].map(puff => createSvgElement('circle', { cx: roundForSvg(topX + canvas.between(-8, 8)), cy: roundForSvg(topY - 3 - puff * 5),
+    r: roundForSvg(6 + puff * 3), fill: '#3a2a26', opacity: roundForSvg(0.35 - puff * 0.08) }));
+  return artGroup('fire-tornado', [
+    ...smoke,
+    createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(baseY), rx: roundForSvg(height * 0.3), ry: roundForSvg(height * 0.07),
+      fill: addArtGradient(canvas, [['0%', '#ffb347', 0.7], ['100%', '#ff7a1a', 0]], true) }),
+    createSvgElement('path', { d: buildRibbonPath(leftEdge, rightEdge),
+      fill: addArtGradient(canvas, [['0%', '#c8501a', 0.35], ['45%', '#ff7a1a', 0.8], ['100%', '#ffe08a', 0.95]]) }),
+    createSvgElement('path', { d: swirls, stroke: '#fff1c4', 'stroke-width': 1, fill: 'none', opacity: 0.65, 'stroke-linecap': 'round' }),
+  ]);
+}
+
+// Short glowing cracks in dark ground.
+function paintLavaCracks(canvas, { colour, count = 6, minY, maxY }) {
+  let cracks = '';
+  for (const { x, y } of scatterByDepth(canvas, count, { minY, maxY })) {
+    cracks += `M${roundForSvg(x)},${roundForSvg(y)} l${roundForSvg(canvas.between(4, 8))},${roundForSvg(canvas.between(-1.5, 1.5))} l${roundForSvg(canvas.between(3, 7))},${roundForSvg(canvas.between(-1.5, 1.5))}`;
+  }
+  canvas.add(artGroup('lava-cracks', [createSvgElement('path', { d: cracks, stroke: colour, 'stroke-width': 1.2, fill: 'none', 'stroke-linecap': 'round', opacity: 0.9 })]));
+}
+
+// Craters: flat ellipses with a lit rim.
+function paintCraters(canvas, { floor, rim, count = 5, minY, maxY }) {
+  const craters = scatterByDepth(canvas, count, { minY, maxY, minX: 20, maxX: BIOME_ART_WIDTH - 20 }).map(({ x, y, depth }) => {
+    const radius = 6 + depth * canvas.between(10, 22);
+    return artGroup('crater', [
+      createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(radius), ry: roundForSvg(radius * 0.22), fill: floor }),
+      createSvgElement('path', { d: `M${roundForSvg(x - radius)},${roundForSvg(y)} a${roundForSvg(radius)},${roundForSvg(radius * 0.22)} 0 0 0 ${roundForSvg(radius * 2)},0`, stroke: rim, 'stroke-width': 1, fill: 'none', opacity: 0.6 }),
+    ]);
+  });
+  canvas.add(...craters);
+}
+
+// ── Weather ──
+
+// Slanted rain streaks.
+function paintRain(canvas) {
+  let streaks = '';
+  for (let drop = 0; drop < 70; drop++) streaks += `M${roundForSvg(canvas.between(-10, BIOME_ART_WIDTH))},${roundForSvg(canvas.between(-5, BIOME_ART_HEIGHT))}l-2.5,8`;
+  canvas.add(artGroup('rain', [createSvgElement('path', { d: streaks, stroke: '#cfdceb', 'stroke-width': 0.7, opacity: 0.4 })]));
+}
+
+// A blizzard: snowflakes and wind-driven streaks.
+function paintSnow(canvas) {
+  let flakes = '';
+  let streaks = '';
+  for (let flake = 0; flake < 70; flake++) flakes += `M${roundForSvg(canvas.between(0, BIOME_ART_WIDTH))},${roundForSvg(canvas.between(0, BIOME_ART_HEIGHT))}h0.1`;
+  for (let streak = 0; streak < 25; streak++) streaks += `M${roundForSvg(canvas.between(-20, BIOME_ART_WIDTH))},${roundForSvg(canvas.between(0, BIOME_ART_HEIGHT))}l14,3`;
+  canvas.add(artGroup('snow', [
+    createSvgElement('path', { d: flakes, stroke: '#ffffff', 'stroke-width': 1.8, 'stroke-linecap': 'round', opacity: 0.8 }),
+    createSvgElement('path', { d: streaks, stroke: '#ffffff', 'stroke-width': 0.6, opacity: 0.45 }),
+  ]));
+}
+
+// Fog: soft horizontal bands that fade in and out. The default bands hang over
+// the distance and leave the nearest ground clear, so the scene still reads.
+function paintFog(canvas, { colour, bands = [[62, 50, 0.5], [96, 36, 0.32]] }) {
+  canvas.add(artGroup('fog', bands.map(([y, height, opacity]) => createSvgElement('rect', { x: 0, y, width: BIOME_ART_WIDTH, height,
+    fill: addArtGradient(canvas, [['0%', colour, 0], ['50%', colour, opacity], ['100%', colour, 0]]) }))));
+}
+
+// An ion storm: a dark cloud bank with jagged blue lightning.
+function paintIonStorm(canvas) {
+  const clouds = [];
+  for (let cloud = 0; cloud < 7; cloud++) {
+    clouds.push(createSvgElement('ellipse', { cx: roundForSvg(canvas.between(-20, BIOME_ART_WIDTH + 20)), cy: roundForSvg(canvas.between(0, 16)), rx: roundForSvg(canvas.between(40, 80)), ry: roundForSvg(canvas.between(10, 18)), fill: '#2a3246', opacity: 0.55 }));
+  }
+  let bolts = '';
+  for (let bolt = 0; bolt < 3; bolt++) {
+    let x = canvas.between(40, BIOME_ART_WIDTH - 40);
+    let y = canvas.between(4, 14);
+    bolts += `M${roundForSvg(x)},${roundForSvg(y)}`;
+    const length = canvas.between(4, 7);
+    for (let step = 0; step < length; step++) {
+      x += canvas.between(-12, 12);
+      y += canvas.between(5, 10);
+      bolts += `L${roundForSvg(x)},${roundForSvg(y)}`;
+    }
+  }
+  canvas.add(artGroup('ion-storm', [
+    ...clouds,
+    createSvgElement('path', { d: bolts, stroke: '#7fd4ff', 'stroke-width': 4, fill: 'none', opacity: 0.25 }),
+    createSvgElement('path', { d: bolts, stroke: '#c9f0ff', 'stroke-width': 1.1, fill: 'none', opacity: 0.9 }),
+  ]));
+}
+
+// Meteors streaking down with glowing tails.
+function paintMeteors(canvas) {
+  const meteors = [];
+  for (let meteor = 0; meteor < 3; meteor++) {
+    const headX = canvas.between(60, BIOME_ART_WIDTH - 20);
+    const headY = canvas.between(20, 70);
+    const tail = addArtGradient(canvas, [['0%', '#ffe6b0', 0], ['100%', '#ffb060', 0.9]]);
+    meteors.push(createSvgElement('path', { d: `M${roundForSvg(headX - 40)},${roundForSvg(headY - 26)} L${roundForSvg(headX)},${roundForSvg(headY)}`, stroke: tail, 'stroke-width': 2, 'stroke-linecap': 'round' }));
+    meteors.push(createSvgElement('circle', { cx: roundForSvg(headX), cy: roundForSvg(headY), r: 1.8, fill: '#fff4d6' }));
+  }
+  canvas.add(artGroup('meteors', meteors));
+}
+
+// A wall of sand on the horizon, and haze over everything.
+function paintSandstorm(canvas, { colour }) {
+  let top = 'M0,112 L0,60';
+  for (let x = 30; x <= BIOME_ART_WIDTH; x += 30) top += ` Q${x - 15},${roundForSvg(canvas.between(30, 50))} ${x},${roundForSvg(canvas.between(48, 64))}`;
+  canvas.add(artGroup('sandstorm', [
+    createSvgElement('path', { d: `${top} L${BIOME_ART_WIDTH},112 Z`, fill: colour, opacity: 0.55 }),
+    createSvgElement('rect', { width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT, fill: colour, opacity: 0.15 }),
+  ]));
+}
+
+// Floating specks: ash, embers or spores.
+function paintSpecks(canvas, { colour, count = 40, size = 1.2, opacity = 0.6, kind = 'ash' }) {
+  let specks = '';
+  for (let speck = 0; speck < count; speck++) specks += `M${roundForSvg(canvas.between(0, BIOME_ART_WIDTH))},${roundForSvg(canvas.between(0, BIOME_ART_HEIGHT))}h0.1`;
+  canvas.add(artGroup(kind, [createSvgElement('path', { d: specks, stroke: colour, 'stroke-width': size, 'stroke-linecap': 'round', opacity })]));
+}
+
+// A tint over part of the picture: heat near the ground, frost at the edges, acid haze.
+function paintTint(canvas, { colour, from = 0, to = 1, opacity = 0.2, kind = 'tint' }) {
+  canvas.add(createSvgElement('rect', { class: `art-${kind}`, width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT,
+    fill: addArtGradient(canvas, [['0%', colour, from ? 0 : opacity], [`${Math.round(from * 100)}%`, colour, from ? 0 : opacity], [`${Math.round(to * 100)}%`, colour, opacity], ['100%', colour, to < 1 ? 0 : opacity]]) }));
+}
+
+// Draws a planet's weather hazards over its landscape.
+function paintWeather(canvas, weather, { fogColour = '#c8ccd0' } = {}) {
+  const has = kind => weather.includes(kind);
+  if (has('heat')) paintTint(canvas, { colour: '#ff8a3a', from: 0.55, to: 1, opacity: 0.18, kind: 'heat' });
+  if (has('fog')) paintFog(canvas, { colour: fogColour });
+  if (has('sandstorm')) paintSandstorm(canvas, { colour: '#d9b27a' });
+  if (has('acid')) paintTint(canvas, { colour: '#c8e04a', opacity: 0.18, kind: 'acid-storm' });
+  if (has('ion')) paintIonStorm(canvas);
+  if (has('fire-tornado')) canvas.add(buildFireTornado(canvas, canvas.between(30, 430), canvas.between(114, 130), canvas.between(50, 76)));
+  if (has('meteors')) paintMeteors(canvas);
+  if (has('embers')) paintSpecks(canvas, { colour: '#ff9a3a', count: 25, size: 1.6, opacity: 0.8, kind: 'embers' });
+  if (has('rain')) paintRain(canvas);
+  if (has('snow')) paintSnow(canvas);
+  if (has('frost')) paintTint(canvas, { colour: '#e6f4ff', from: 0, to: 0.35, opacity: 0.22, kind: 'frost' });
+}
+
+// ── One painter per biome ──
+// Each draws sky → distance → ground → plants and rocks (far to near); the
+// weather comes after. The comments say what the wiki describes.
+
+// Plants placed across the ground far to near, drawn by the given builder.
+function paintPlants(canvas, count, area, build) {
+  for (const position of scatterByDepth(canvas, count, area)) canvas.add(build(position));
+}
+
+const BIOME_PAINTERS = {
+  // Tropical: jungle under an unbroken canopy, palms and ferns, grassy
+  // clearings, beaches and sea, distant mountains and a smoking volcano,
+  // flocks of birds.
+  'volcanic-jungle': canvas => {
+    paintSky(canvas, ['#3d7fa6', '#9cc4c8', '#dce8c8']);
+    paintClouds(canvas, { colour: '#ffffff', count: 3, opacity: 0.45 });
+    paintBirds(canvas, { colour: '#2f3f3a' });
+    paintPeaks(canvas, { colour: '#7f9aa8', baseY: 96, minHeight: 18, maxHeight: 36, count: 5, sharpness: 0.3 });
+    canvas.add(buildVolcano(canvas, canvas.between(80, 380), 98, 42, canvas.between(38, 52), { rock: '#6c7a7e', glow: '#ff8a3a', smoke: '#8e9696' }));
+    if (canvas.chance(0.6)) paintWater(canvas, { y: 96, height: 8, colour: '#3f9fa8' });
+    paintCanopy(canvas, { baseY: 110, height: 16, colours: ['#2c6a34', '#3f8a40', '#6ab25a'] });
+    paintGround(canvas, { y: 118, top: '#3f7a38', bottom: '#2c6a2c' });
+    paintPlants(canvas, 6, { minY: 112, maxY: 146 }, ({ x, y, depth }) => (canvas.chance(0.2)
+      ? buildPalmTree(canvas, x, y, 24 + depth * 34, { trunk: '#6a5238', fronds: '#2f8a3a' })
+      : buildJungleTree(canvas, x, y, 30 + depth * 44, { leaves: ['#236b2e', '#2f8a3a', '#56b04e'], trunk: '#4a3a2a', vine: '#2a5a2a' })));
+    paintPlants(canvas, 9, { minY: 122, maxY: 148 }, ({ x, y, depth }) => buildFern(canvas, x, y, 5 + depth * 7, '#5aa84f'));
+    paintGrass(canvas, { colour: '#6fbf58', minY: 120, maxY: 148, count: 40 });
+    paintFlowers(canvas, { colours: ['#f2d34a', '#e8566b'], count: 14, minY: 124, maxY: 148 });
+  },
+
+  // Like the Volcanic Jungle but dim, with blue leaves, blue grass and glowing
+  // ferns.
+  'ionic-jungle': canvas => {
+    paintSky(canvas, ['#0c1a33', '#1f3f66', '#3a6a8c']);
+    paintStars(canvas, { count: 12, colour: '#bfe6ff', maxY: 50 });
+    paintPeaks(canvas, { colour: '#243f63', baseY: 96, minHeight: 16, maxHeight: 34, count: 5, sharpness: 0.3 });
+    if (canvas.chance(0.6)) paintWater(canvas, { y: 96, height: 8, colour: '#1f5f8f', glint: '#9fdcff' });
+    paintCanopy(canvas, { baseY: 110, height: 16, colours: ['#163f78', '#1f5aa8', '#4f9ae0'] });
+    paintGround(canvas, { y: 118, top: '#1a4a80', bottom: '#123866' });
+    paintPlants(canvas, 6, { minY: 112, maxY: 146 }, ({ x, y, depth }) => buildJungleTree(canvas, x, y, 30 + depth * 44,
+      { leaves: ['#1d5aa8', '#2f7fd6', '#6fc2ff'], trunk: '#2a2a44', vine: '#1d4a88' }));
+    paintPlants(canvas, 8, { minY: 122, maxY: 148 }, ({ x, y, depth }) => buildFern(canvas, x, y, 5 + depth * 7, '#7fe6ff', '#7fe6ff'));
+    paintGrass(canvas, { colour: '#4a9ae8', minY: 120, maxY: 148, count: 40 });
+  },
+
+  // Rose-tinted air, lavender trees, crimson bushes, lilac grass and teal water.
+  'ethereal-jungle': canvas => {
+    paintSky(canvas, ['#5a3f7a', '#b98ab8', '#f2c2d2']);
+    paintPeaks(canvas, { colour: '#9a7aaa', baseY: 96, minHeight: 16, maxHeight: 34, count: 5, sharpness: 0.3 });
+    if (canvas.chance(0.7)) paintWater(canvas, { y: 96, height: 8, colour: '#3fb8a8' });
+    paintCanopy(canvas, { baseY: 110, height: 14, colours: ['#8a64c0', '#a882dc', '#d4b8f4'] });
+    paintGround(canvas, { y: 118, top: '#a07cc8', bottom: '#7e5aac' });
+    paintPlants(canvas, 6, { minY: 112, maxY: 146 }, ({ x, y, depth }) => buildJungleTree(canvas, x, y, 30 + depth * 44,
+      { leaves: ['#9a70d0', '#b890e8', '#e0c8ff'], trunk: '#5a3a6a', vine: '#8a64c0' }));
+    paintPlants(canvas, 7, { minY: 124, maxY: 148 }, ({ x, y, depth }) => buildShrub(canvas, x, y, 4 + depth * 5, ['#b4304f', '#d0405c', '#962844']));
+    paintGrass(canvas, { colour: '#d8b0f4', minY: 120, maxY: 148, count: 40 });
+    paintFlowers(canvas, { colours: ['#ff9ac8', '#fff0ff'], count: 12, minY: 124, maxY: 148 });
+  },
+
+  // Lifeless grey: dead trees, dried-out coral and parasitic growths with
+  // violet flowers, the distance lost in fog.
+  deadlands: canvas => {
+    paintSky(canvas, ['#66636a', '#96919a', '#c2bdbf']);
+    paintHills(canvas, '#8f8a8d', { baseY: 98, amplitude: 12 });
+    paintPlants(canvas, 7, { minY: 96, maxY: 104 }, ({ x, y }) => buildBareTree(canvas, x, y, canvas.between(14, 22), { colour: '#78727a', twist: 0.35 }));
+    paintFog(canvas, { colour: '#d8d4d6', bands: [[66, 46, 0.6]] });
+    paintGround(canvas, { y: 110, top: '#7c7677', bottom: '#5a5455' });
+    paintPlants(canvas, 6, { minY: 116, maxY: 146 }, ({ x, y, depth }) => buildBareTree(canvas, x, y, 26 + depth * 36,
+      { colour: '#3a3538', twist: 0.4, blossoms: '#b06cf0' }));
+    paintPlants(canvas, 7, { minY: 122, maxY: 148 }, ({ x, y, depth }) => buildCoral(canvas, x, y, 6 + depth * 9, '#ddd4cc'));
+    paintPlants(canvas, 5, { minY: 124, maxY: 148 }, ({ x, y, depth }) => artGroup('parasite', [
+      createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y - 3 - depth * 2), rx: roundForSvg(3 + depth * 3), ry: roundForSvg(2.5 + depth * 2), fill: '#5e4a63' }),
+      createSvgElement('path', { d: `M${roundForSvg(x - 2)},${roundForSvg(y - 5 - depth * 3)}h0.1M${roundForSvg(x + 2)},${roundForSvg(y - 6 - depth * 3)}h0.1M${roundForSvg(x)},${roundForSvg(y - 7 - depth * 4)}h0.1`,
+        stroke: '#b86cf8', 'stroke-width': 2.4, 'stroke-linecap': 'round' }),
+    ]));
+  },
+
+  // The original planet buried under Terminid matter: spires, mounds, yellow
+  // puddles and drifting spores, with patches of grass and grey rock.
+  supercolony: canvas => {
+    paintSky(canvas, ['#3e3018', '#7e6430', '#d0aa60']);
+    paintPlants(canvas, 5, { minY: 96, maxY: 100 }, ({ x, y }) => buildTerminidSpire(canvas, x, y, canvas.between(26, 44), { matter: '#6a4a24', ridge: '#4a3218' }));
+    paintHills(canvas, '#7a5222', { baseY: 108, amplitude: 10 });
+    paintGround(canvas, { y: 116, top: '#7a5222', bottom: '#563614' });
+    canvas.add(artGroup('grass-patch', [createSvgElement('ellipse', { cx: roundForSvg(canvas.between(60, 400)), cy: 132, rx: 36, ry: 6, fill: '#5a7a3a' })]));
+    paintPlants(canvas, 4, { minY: 118, maxY: 146 }, ({ x, y, depth }) => buildTerminidSpire(canvas, x, y, 30 + depth * 50, { matter: '#8a5a26', ridge: '#5e3c18' }));
+    paintPlants(canvas, 4, { minY: 124, maxY: 146 }, ({ x, y, depth }) => buildHiveMound(x, y, 20 + depth * 20, 10 + depth * 10, { matter: '#6e461c', hole: '#2a1606' }));
+    paintPlants(canvas, 5, { minY: 128, maxY: 148 }, ({ x, y, depth }) => artGroup('puddle', [createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(6 + depth * 10), ry: roundForSvg(1.5 + depth * 2), fill: '#e6c83a', opacity: 0.85 })]));
+    paintSpecks(canvas, { colour: '#e8e070', count: 30, size: 1.4, opacity: 0.5, kind: 'spores' });
+  },
+
+  // Dark, craggy ground broken by towering rock spires, orange pools and pits.
+  'hive-world': canvas => {
+    paintSky(canvas, ['#1a120b', '#3e2412', '#7a4418']);
+    paintPeaks(canvas, { colour: '#2e1e14', baseY: 104, minHeight: 30, maxHeight: 70, count: 7, sharpness: 0.85 });
+    paintGround(canvas, { y: 112, top: '#3a2618', bottom: '#24160e' });
+    paintPlants(canvas, 3, { minY: 118, maxY: 146 }, ({ x, y, depth }) => buildTerminidSpire(canvas, x, y, 34 + depth * 46, { matter: '#4a3020', ridge: '#2e1e14' }));
+    paintPlants(canvas, 4, { minY: 122, maxY: 148 }, ({ x, y, depth }) => buildLavaPool(canvas, x, y, 10 + depth * 18, { lava: '#e07a1a', core: '#ffb347', glow: '#ff8a2a' }));
+    paintPlants(canvas, 2, { minY: 126, maxY: 148 }, ({ x, y, depth }) => artGroup('pit', [createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(8 + depth * 12), ry: roundForSvg(2 + depth * 3), fill: '#080504' })]));
+    paintSpecks(canvas, { colour: '#ffb060', count: 15, size: 1.3, opacity: 0.5, kind: 'embers' });
+  },
+
+  // Scorched brown grass, charred leafless trees, rock pillars and massive sharp
+  // mountains under a hot, smoky sky, swept by fire tornadoes.
+  'scorched-moor': canvas => {
+    paintSky(canvas, ['#4a2418', '#9a4a28', '#e8a060']);
+    paintPeaks(canvas, { colour: '#4a2a22', baseY: 104, minHeight: 34, maxHeight: 66, count: 7, sharpness: 0.9 });
+    paintHills(canvas, '#6a4630', { baseY: 112, amplitude: 8 });
+    paintGround(canvas, { y: 118, top: '#8a6236', bottom: '#5e4226' });
+    paintPlants(canvas, 3, { minY: 116, maxY: 140 }, ({ x, y, depth }) => buildRockPillar(canvas, x, y, 8 + depth * 8, 18 + depth * 26, { rock: '#5e3a2c', light: '#9a6a4a' }));
+    paintPlants(canvas, 5, { minY: 118, maxY: 147 }, ({ x, y, depth }) => buildBareTree(canvas, x, y, 18 + depth * 30, { colour: '#1c1411', twist: 0.3, broken: true }));
+    paintGrass(canvas, { colour: '#b08a52', minY: 120, maxY: 148, count: 50 });
+    paintSpecks(canvas, { colour: '#2a2020', count: 30, size: 1.2, opacity: 0.5, kind: 'ash' });
+  },
+
+  // Red algae-covered grass and rocky hills, grey rock pillars, sea cliffs,
+  // a yellowish sky, and no trees at all.
+  'ionic-crimson': canvas => {
+    paintSky(canvas, ['#5e5436', '#a8985a', '#e6d48c']);
+    paintClouds(canvas, { colour: '#8a8264', count: 4, opacity: 0.45 });
+    if (canvas.chance(0.6)) paintWater(canvas, { y: 98, height: 8, colour: '#4a6a82' });
+    paintHills(canvas, '#8a2c2a', { baseY: 102, amplitude: 14, jaggedness: 0.3 });
+    paintHills(canvas, '#a8302a', { baseY: 116, amplitude: 9 });
+    paintGround(canvas, { y: 124, top: '#b0322c', bottom: '#7a1e1e' });
+    paintPlants(canvas, 4, { minY: 112, maxY: 146 }, ({ x, y, depth }) => (depth > 0.5 || canvas.chance(0.4)
+      ? buildBoulder(x, y, 6 + depth * 10, 5 + depth * 8, { rock: '#6e6664', light: '#b8b0aa' })
+      : buildRockPillar(canvas, x, y, 7 + depth * 6, 16 + depth * 20, { rock: '#6a6260', light: '#aaa29c' })));
+    paintGrass(canvas, { colour: '#d8483e', minY: 118, maxY: 148, count: 60 });
+  },
+
+  // Orange grass, colourful shrubs and flowers, pine trees and grey rock
+  // pillars under a chilly sky with a faint aurora.
+  tundra: canvas => {
+    paintSky(canvas, ['#233f60', '#5f86a4', '#b4ccd6']);
+    paintAurora(canvas, ['#5fe0a0', '#7ff0c8']);
+    paintPeaks(canvas, { colour: '#6a7a86', baseY: 100, minHeight: 16, maxHeight: 34, count: 5, snow: '#e8f0f4', sharpness: 0.5 });
+    paintHills(canvas, '#a86a34', { baseY: 110, amplitude: 9 });
+    paintGround(canvas, { y: 118, top: '#c07a34', bottom: '#9a5a26' });
+    paintPlants(canvas, 2, { minY: 114, maxY: 138 }, ({ x, y, depth }) => buildRockPillar(canvas, x, y, 8 + depth * 7, 16 + depth * 22, { rock: '#7a7a7e', light: '#b8b8bc' }));
+    paintPlants(canvas, 5, { minY: 110, maxY: 146 }, ({ x, y, depth }) => buildPineTree(x, y, 16 + depth * 30, { leaves: '#2a4636', trunk: '#3a2a1e' }));
+    paintPlants(canvas, 10, { minY: 120, maxY: 148 }, ({ x, y, depth }) => buildShrub(canvas, x, y, 3 + depth * 5, ['#d0502a', '#e8a030', '#e8d04a', '#a0508a']));
+    paintGrass(canvas, { colour: '#e0924a', minY: 120, maxY: 148, count: 45 });
+    paintFlowers(canvas, { colours: ['#f4e04a', '#f06a8a'], count: 14, minY: 124, maxY: 148 });
+  },
+
+  // Misty highland fields of tall green grass, rocky outcrops and boulders,
+  // cloudy rainy skies, and no trees.
+  plains: canvas => {
+    paintSky(canvas, ['#556f8e', '#8ea6b8', '#ccd8dc']);
+    paintClouds(canvas, { colour: '#eef2f4', count: 5, opacity: 0.55 });
+    paintHills(canvas, '#8aa294', { baseY: 96, amplitude: 14 });
+    paintFog(canvas, { colour: '#dfe6e8', bands: [[78, 30, 0.45]] });
+    paintHills(canvas, '#5e8a42', { baseY: 112, amplitude: 9 });
+    paintGround(canvas, { y: 120, top: '#6a9a44', bottom: '#4a7a30' });
+    paintPlants(canvas, 3, { minY: 110, maxY: 146 }, ({ x, y, depth }) => (canvas.chance(0.5)
+      ? buildRockPillar(canvas, x, y, 8 + depth * 8, 16 + depth * 24, { rock: '#7a7c78', light: '#b8bab4' })
+      : buildBoulder(x, y, 6 + depth * 10, 5 + depth * 8, { rock: '#7e807a', light: '#c0c2bc' })));
+    paintGrass(canvas, { colour: '#88bc5a', minY: 116, maxY: 148, count: 80, height: 7 });
+  },
+
+  // Snowy rocky mountains, glacial ice, up-facing icicles, a few snowy pines
+  // and frost flowers under a pale, cold sky.
+  'icy-glaciers': canvas => {
+    paintSky(canvas, ['#35557a', '#7c9cb8', '#d6e6ee']);
+    paintPeaks(canvas, { colour: '#6f8494', baseY: 100, minHeight: 26, maxHeight: 52, count: 6, snow: '#f4f8fb', sharpness: 0.7 });
+    paintHills(canvas, '#a8d0e6', { baseY: 110, amplitude: 10, jaggedness: 0.6 }, 'glacier');
+    paintGround(canvas, { y: 118, top: '#eef4f8', bottom: '#d8e6ee' });
+    paintPlants(canvas, 3, { minY: 118, maxY: 146 }, ({ x, y, depth }) => buildIcicles(canvas, x, y, 10 + depth * 16, { ice: '#bfe4f5', light: '#eaf8ff' }));
+    paintPlants(canvas, 3, { minY: 112, maxY: 146 }, ({ x, y, depth }) => buildPineTree(x, y, 14 + depth * 24, { leaves: '#2e4444', trunk: '#3a2e26', snow: '#f4f8fb' }));
+    paintFlowers(canvas, { colours: ['#9fdcf5'], count: 10, minY: 128, maxY: 148, size: 1.6 });
+  },
+
+  // Rock cliffs and formations covered in ice and moss, ferns and frost
+  // flowers near the rocks, snow patches. (No bones, whatever the name says.)
+  boneyard: canvas => {
+    paintSky(canvas, ['#34403e', '#6a7a76', '#a8b4b0']);
+    paintPeaks(canvas, { colour: '#555c5a', baseY: 104, minHeight: 28, maxHeight: 60, count: 6, snow: '#dfe8ea', sharpness: 0.8 });
+    paintGround(canvas, { y: 112, top: '#6e7472', bottom: '#50565a' });
+    paintPlants(canvas, 6, { minY: 116, maxY: 148 }, ({ x, y, depth }) => artGroup('ground-patch', [createSvgElement('ellipse', {
+      cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(8 + depth * 16), ry: roundForSvg(2 + depth * 3), fill: canvas.chance(0.5) ? '#5a7a44' : '#e6eef0' })]));
+    paintPlants(canvas, 4, { minY: 112, maxY: 146 }, ({ x, y, depth }) => buildRockPillar(canvas, x, y, 10 + depth * 10, 18 + depth * 30, { rock: '#666c6a', light: '#a0a8a6', cap: '#6a8a4a' }));
+    paintPlants(canvas, 6, { minY: 124, maxY: 148 }, ({ x, y, depth }) => buildFern(canvas, x, y, 4 + depth * 6, '#6f8f54'));
+    paintFlowers(canvas, { colours: ['#a8dcf0'], count: 8, minY: 128, maxY: 148, size: 1.6 });
+  },
+
+  // Tien Kwan: the same icy, mossy rock, but darker, under greenish-grey fog,
+  // with sparse dry bushes.
+  'tien-kwan': canvas => {
+    paintSky(canvas, ['#262e2a', '#48544e', '#76847c']);
+    paintPeaks(canvas, { colour: '#3e4643', baseY: 104, minHeight: 28, maxHeight: 60, count: 6, snow: '#c8d2d0', sharpness: 0.8 });
+    paintGround(canvas, { y: 112, top: '#565c58', bottom: '#3e4440' });
+    paintPlants(canvas, 4, { minY: 112, maxY: 146 }, ({ x, y, depth }) => buildRockPillar(canvas, x, y, 10 + depth * 10, 18 + depth * 30, { rock: '#4e5451', light: '#7e8683', cap: '#3e5a3a' }));
+    paintPlants(canvas, 6, { minY: 122, maxY: 148 }, ({ x, y, depth }) => buildShrub(canvas, x, y, 3 + depth * 4, ['#3a4a36', '#4a5446', '#5e6258']));
+    paintFog(canvas, { colour: '#8fa294', bands: [[50, 60, 0.45], [100, 48, 0.35]] });
+  },
+
+  // Black basalt ridges, magma lakes and distant volcanoes under a thick ashen
+  // sky that barely lets light through, with a light fog.
+  magma: canvas => {
+    paintSky(canvas, ['#100b0c', '#2a1512', '#6e2e16']);
+    for (let volcano = 0; volcano < 2; volcano++) {
+      canvas.add(buildVolcano(canvas, canvas.between(40, 420), 96, canvas.between(30, 48), canvas.between(28, 46), { rock: '#221615', glow: '#ff7a1a', smoke: '#3a2a26' }));
+    }
+    paintPeaks(canvas, { colour: '#1a1314', baseY: 106, minHeight: 10, maxHeight: 26, count: 8, sharpness: 0.9 });
+    paintGround(canvas, { y: 108, top: '#171213', bottom: '#0c0a0a' });
+    paintPlants(canvas, 4, { minY: 114, maxY: 146 }, ({ x, y, depth }) => buildLavaPool(canvas, x, y, 12 + depth * 30, { lava: '#ff6a10', core: '#ffc84a', glow: '#ff7a1a' }));
+    paintLavaCracks(canvas, { colour: '#ff8a2a', count: 8, minY: 118, maxY: 148 });
+    paintSpecks(canvas, { colour: '#5a4a46', count: 40, size: 1.1, opacity: 0.6, kind: 'ash' });
+    paintFog(canvas, { colour: '#6a2a1a', bands: [[88, 30, 0.35]] });
+  },
+
+  // Broadleaf woodlands on rolling hills, flower meadows and shallow streams.
+  'deciduous-forest': canvas => {
+    paintSky(canvas, ['#3f80cc', '#86b8e0', '#d4ecf2']);
+    paintSun(canvas, { colour: '#fff6d0', glow: '#fff2b0' });
+    paintClouds(canvas, { colour: '#ffffff', count: 3, opacity: 0.6 });
+    paintHills(canvas, '#7aa87a', { baseY: 100, amplitude: 12 });
+    paintPlants(canvas, 10, { minY: 96, maxY: 104 }, ({ x, y }) => buildBroadleafTree(canvas, x, y, canvas.between(10, 16), { leaves: ['#4f7e52', '#5f9460', '#7aac78'], trunk: '#4a3a2a' }));
+    paintHills(canvas, '#5a9a48', { baseY: 114, amplitude: 8 });
+    paintGround(canvas, { y: 120, top: '#5aa048', bottom: '#3f8a36' });
+    paintStream(canvas, { colour: '#7ec0e8', startY: 112 });
+    paintPlants(canvas, 7, { minY: 114, maxY: 146 }, ({ x, y, depth }) => buildBroadleafTree(canvas, x, y, 22 + depth * 36,
+      { leaves: ['#2f6e30', '#3f8a3a', '#6ab25a'], trunk: '#5a3a22' }));
+    paintFlowers(canvas, { colours: ['#f2d34a', '#ffffff', '#ef86b6', '#9a70d0'], count: 40, minY: 122, maxY: 148 });
+  },
+
+  // The autumn variant of the deciduous forest: amber groves and golden grass
+  // at sunset.
+  'autumn-forest': canvas => {
+    paintSky(canvas, ['#3a2e58', '#b0607a', '#f4a45a']);
+    paintSun(canvas, { colour: '#ffd79a', glow: '#ffb060', y: canvas.between(58, 74), radius: canvas.between(12, 16) });
+    paintHills(canvas, '#9a5a3a', { baseY: 102, amplitude: 12 });
+    paintPlants(canvas, 10, { minY: 98, maxY: 106 }, ({ x, y }) => buildBroadleafTree(canvas, x, y, canvas.between(10, 16), { leaves: ['#a8522a', '#c06a2e', '#d88a3a'], trunk: '#3e2a1e' }));
+    paintHills(canvas, '#b8843a', { baseY: 114, amplitude: 8 });
+    paintGround(canvas, { y: 120, top: '#c8923e', bottom: '#a0702c' });
+    paintPlants(canvas, 7, { minY: 114, maxY: 146 }, ({ x, y, depth }) => buildBroadleafTree(canvas, x, y, 22 + depth * 36,
+      { leaves: ['#bf5f26', '#d9822a', '#f0b04a'], trunk: '#4a2e1e' }));
+    paintGrass(canvas, { colour: '#e0b058', minY: 120, maxY: 148, count: 50 });
+    paintFlowers(canvas, { colours: ['#e0702a', '#c84a22'], count: 16, minY: 124, maxY: 148, size: 1.5 });
+  },
+
+  // Broadleaf woods with crimson leaves.
+  'crimson-forest': canvas => {
+    paintSky(canvas, ['#4a6a9a', '#98a8c0', '#e6cfc4']);
+    paintHills(canvas, '#8a5a52', { baseY: 102, amplitude: 12 });
+    paintPlants(canvas, 10, { minY: 98, maxY: 106 }, ({ x, y }) => buildBroadleafTree(canvas, x, y, canvas.between(10, 16), { leaves: ['#7a2a32', '#94343a', '#b04a48'], trunk: '#3e2a24' }));
+    paintHills(canvas, '#6a7a42', { baseY: 114, amplitude: 8 });
+    paintGround(canvas, { y: 120, top: '#6e8246', bottom: '#526434' });
+    paintPlants(canvas, 7, { minY: 114, maxY: 146 }, ({ x, y, depth }) => buildBroadleafTree(canvas, x, y, 22 + depth * 36,
+      { leaves: ['#8a1e2e', '#a8283a', '#d0504a'], trunk: '#4a2e24' }));
+    paintGrass(canvas, { colour: '#8aa04e', minY: 120, maxY: 148, count: 40 });
+    paintFlowers(canvas, { colours: ['#ffffff', '#f2d34a'], count: 14, minY: 124, maxY: 148 });
+  },
+
+  // A rocky, lonely moon: flat grey sandy dunes covered in craters, a black
+  // starry sky, a planet hanging above.
+  moon: canvas => {
+    paintSky(canvas, ['#04060b', '#0e1220', '#262c3a']);
+    paintStars(canvas, { count: 45, maxY: 100 });
+    paintSkyPlanet(canvas, { colour: '#7a9ac0', shade: '#0e1220' });
+    paintHills(canvas, '#6e6e76', { baseY: 106, amplitude: 8 });
+    paintGround(canvas, { y: 114, top: '#8e8e94', bottom: '#66666c' });
+    paintCraters(canvas, { floor: '#5e5e64', rim: '#c8c8ce', count: 6, minY: 118, maxY: 146 });
+    paintPlants(canvas, 3, { minY: 118, maxY: 146 }, ({ x, y, depth }) => buildBoulder(x, y, 4 + depth * 8, 3 + depth * 6, { rock: '#74747a', light: '#b4b4ba' }));
+  },
+
+  // A forested swamp: massive gnarled trees with thick roots and hanging
+  // vines, deep water channels, fungal growths, grass and flowers under
+  // filtered sunlight.
+  'basic-swamp': canvas => {
+    paintSky(canvas, ['#3e5846', '#7a9678', '#b8cca6']);
+    canvas.add(artGroup('light-rays', [0, 1, 2].map(ray => {
+      const x = canvas.between(40, 420);
+      return createSvgElement('polygon', { points: `${roundForSvg(x)},0 ${roundForSvg(x + 16)},0 ${roundForSvg(x + 60)},148 ${roundForSvg(x + 30)},148`, fill: '#f6f2c8', opacity: 0.12 + ray * 0.02 });
+    })));
+    paintHills(canvas, '#4a6a4a', { baseY: 100, amplitude: 10, jaggedness: 0.8 }, 'treeline');
+    paintPlants(canvas, 5, { minY: 98, maxY: 106 }, ({ x, y }) => buildGnarledTree(canvas, x, y, canvas.between(24, 34),
+      { trunk: '#3e4a36', leaves: ['#35533a', '#42623f'], vine: '#56704a' }));
+    paintWater(canvas, { y: 112, height: 36, colour: '#3e5e4e', glint: '#cfe0c0' });
+    paintPlants(canvas, 4, { minY: 118, maxY: 146 }, ({ x, y, depth }) => artGroup('bank', [createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y + 2), rx: roundForSvg(20 + depth * 30), ry: roundForSvg(3 + depth * 4), fill: '#3a5a32' })]));
+    paintPlants(canvas, 4, { minY: 118, maxY: 146 }, ({ x, y, depth }) => buildGnarledTree(canvas, x, y, 52 + depth * 50,
+      { trunk: '#3e2c20', leaves: ['#23401f', '#34582e'], vine: '#6a8a4a' }));
+    paintPlants(canvas, 3, { minY: 126, maxY: 148 }, ({ x, y, depth }) => buildMushrooms(canvas, x, y, 3 + depth * 4, { cap: '#e8d8b8', stem: '#cfc2a4' }));
+    paintGrass(canvas, { colour: '#6a9a4a', minY: 122, maxY: 148, count: 30 });
+    paintFlowers(canvas, { colours: ['#f0e060', '#ffffff'], count: 8, minY: 126, maxY: 148 });
+  },
+
+  // Squelching mud, murky water and twisting roots under dim skies and thick
+  // fog, with walls of rock in the distance and glowing volcano plants.
+  'haunted-swamp': canvas => {
+    paintSky(canvas, ['#223029', '#44574f', '#72857b']);
+    paintPeaks(canvas, { colour: '#3c4a45', baseY: 104, minHeight: 22, maxHeight: 40, count: 4, sharpness: 0.2 });
+    paintPlants(canvas, 6, { minY: 100, maxY: 108 }, ({ x, y }) => buildBareTree(canvas, x, y, canvas.between(16, 26), { colour: '#3a4843', twist: 0.55 }));
+    paintFog(canvas, { colour: '#98aaa0', bands: [[64, 50, 0.6]] });
+    paintGround(canvas, { y: 110, top: '#3c372d', bottom: '#29251f' });
+    paintPlants(canvas, 4, { minY: 118, maxY: 146 }, ({ x, y, depth }) => artGroup('murky-water', [
+      createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(18 + depth * 30), ry: roundForSvg(2 + depth * 4), fill: '#2c3d39' }),
+      createSvgElement('path', { d: `M${roundForSvg(x - 8 - depth * 12)},${roundForSvg(y - 0.5)}h${roundForSvg(10 + depth * 10)}`, stroke: '#7a948a', 'stroke-width': 0.7, opacity: 0.5 }),
+    ]));
+    paintPlants(canvas, 5, { minY: 112, maxY: 146 }, ({ x, y, depth }) => buildBareTree(canvas, x, y, 28 + depth * 42, { colour: '#141816', twist: 0.55 }));
+    let roots = '';
+    for (const { x, y, depth } of scatterByDepth(canvas, 7, { minY: 124, maxY: 148 })) {
+      const reach = 8 + depth * 16;
+      roots += `M${roundForSvg(x)},${roundForSvg(y)} q${roundForSvg(reach / 2)},${roundForSvg(-reach * 0.8)} ${roundForSvg(reach)},0`;
+    }
+    canvas.add(artGroup('roots', [createSvgElement('path', { d: roots, stroke: '#1e1a15', 'stroke-width': 2.4, fill: 'none', 'stroke-linecap': 'round' })]));
+    paintPlants(canvas, 3, { minY: 126, maxY: 148 }, ({ x, y }) => artGroup('volcano-plant', [
+      createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y - 3), r: 6, fill: '#ff6a2a', opacity: 0.3 }),
+      createSvgElement('circle', { cx: roundForSvg(x), cy: roundForSvg(y - 3), r: 2.2, fill: '#ff8a4a' }),
+    ]));
+    paintFog(canvas, { colour: '#98aaa0', bands: [[112, 30, 0.25]] });
+  },
+
+  // Sand dunes, dead shrubs and small rocks under a blue sky with sand-coloured
+  // clouds, one or more big suns and a sandstorm approaching on the horizon.
+  'desert-dunes': canvas => {
+    paintSky(canvas, ['#3a6ab4', '#8ab0d0', '#ecd09a']);
+    paintSun(canvas, { colour: '#fff4d0', glow: '#ffe6a0', radius: canvas.between(12, 18) });
+    if (canvas.chance(0.5)) paintSun(canvas, { colour: '#ffe8c0', glow: '#ffd890', radius: canvas.between(6, 10) });
+    paintClouds(canvas, { colour: '#e6c890', count: 3, opacity: 0.6 });
+    paintSandstorm(canvas, { colour: '#c8a068' });
+    paintHills(canvas, '#dcae68', { baseY: 106, amplitude: 10 }, 'dunes');
+    paintHills(canvas, '#c8944e', { baseY: 122, amplitude: 9 }, 'dunes');
+    paintGround(canvas, { y: 132, top: '#b8843e', bottom: '#a47236' });
+    paintPlants(canvas, 3, { minY: 122, maxY: 146 }, ({ x, y, depth }) => buildBoulder(x, y, 4 + depth * 8, 3 + depth * 6, { rock: '#9a6a44', light: '#d0a070' }));
+    paintPlants(canvas, 4, { minY: 120, maxY: 146 }, ({ x, y, depth }) => buildDryShrub(canvas, x, y, 6 + depth * 10, '#7a5a3a'));
+  },
+
+  // Hilly sand and rock: stepped cliffs, large rock formations and tall dead
+  // shrubs under a hot sky.
+  'desert-cliffs': canvas => {
+    paintSky(canvas, ['#4a70a6', '#98acc0', '#eab98a']);
+    paintSun(canvas, { colour: '#fff4d6', glow: '#ffe2a8' });
+    paintHills(canvas, '#b8784a', { baseY: 90, amplitude: 22, jaggedness: 0.6, flatTops: true }, 'cliffs');
+    paintHills(canvas, '#a4643c', { baseY: 106, amplitude: 14, jaggedness: 0.4, flatTops: true }, 'cliffs');
+    paintHills(canvas, '#c88a52', { baseY: 118, amplitude: 8 });
+    paintGround(canvas, { y: 124, top: '#cf9660', bottom: '#b27646' });
+    paintPlants(canvas, 3, { minY: 116, maxY: 146 }, ({ x, y, depth }) => buildRockPillar(canvas, x, y, 14 + depth * 16, 20 + depth * 34, { rock: '#9a5a36', light: '#d08a5a' }));
+    paintPlants(canvas, 5, { minY: 120, maxY: 148 }, ({ x, y, depth }) => buildDryShrub(canvas, x, y, 6 + depth * 12, '#6e4e32'));
+  },
+
+  // Sand and rock with mega rock formations taller than buildings, and dead shrubs.
+  'rocky-canyons': canvas => {
+    paintSky(canvas, ['#5a7aa4', '#a8b8c4', '#e6bd92']);
+    paintPlants(canvas, 3, { minY: 104, maxY: 112 }, ({ x, y }) => buildMesa(canvas, x, y, canvas.between(50, 90), canvas.between(40, 70), { rock: '#8a5034', light: '#c08058', strata: '#6a3a24' }));
+    paintHills(canvas, '#c08654', { baseY: 118, amplitude: 8 });
+    paintGround(canvas, { y: 124, top: '#cc9460', bottom: '#aa7446' });
+    paintPlants(canvas, 2, { minY: 124, maxY: 146 }, ({ x, y, depth }) => buildMesa(canvas, x, y, 30 + depth * 30, 20 + depth * 30, { rock: '#9c5a3a', light: '#d09068', strata: '#6e3e26' }));
+    paintPlants(canvas, 5, { minY: 122, maxY: 148 }, ({ x, y, depth }) => buildDryShrub(canvas, x, y, 6 + depth * 12, '#6e4e32'));
+  },
+
+  // Toxic haze over rock and sand: mega rock formations with yellow mist
+  // spilling down their sides, patches of tall grass and acid flowers.
+  'acidic-badlands': canvas => {
+    paintSky(canvas, ['#4e5a2c', '#98a05a', '#dcdc94']);
+    paintPlants(canvas, 3, { minY: 104, maxY: 112 }, ({ x, y }) => {
+      const width = canvas.between(40, 80);
+      const height = canvas.between(40, 66);
+      const mist = [-0.3, 0.05, 0.28].filter(() => canvas.chance(0.75)).map(across => {
+        const mistX = x + across * width;
+        const topY = y - height + 2;
+        return createSvgElement('path', { fill: addArtGradient(canvas, [['0%', '#f4ec70', 0.6], ['100%', '#f4ec70', 0.1]]),
+          d: `M${roundForSvg(mistX - 2)},${roundForSvg(topY)} Q${roundForSvg(mistX - 4)},${roundForSvg(topY + height * 0.5)} ${roundForSvg(mistX - 9)},${roundForSvg(y)} L${roundForSvg(mistX + 9)},${roundForSvg(y)} Q${roundForSvg(mistX + 4)},${roundForSvg(topY + height * 0.5)} ${roundForSvg(mistX + 2)},${roundForSvg(topY)} Z` });
+      });
+      return artGroup('mega-rock', [
+        buildMesa(canvas, x, y, width, height, { rock: '#6e6040', light: '#a09060', strata: '#4e4430' }),
+        ...mist,
+        createSvgElement('ellipse', { cx: roundForSvg(x), cy: roundForSvg(y), rx: roundForSvg(width * 0.75), ry: 6, fill: addArtGradient(canvas, [['0%', '#f4ec70', 0.5], ['100%', '#f4ec70', 0]], true) }),
+      ]);
+    });
+    paintHills(canvas, '#a09456', { baseY: 118, amplitude: 8 });
+    paintGround(canvas, { y: 124, top: '#b4a466', bottom: '#8e8250' });
+    paintGrass(canvas, { colour: '#8aa044', minY: 122, maxY: 148, count: 40, height: 7 });
+    paintFlowers(canvas, { colours: ['#d8f040'], count: 12, minY: 126, maxY: 148, size: 2 });
+    paintTint(canvas, { colour: '#d8e060', from: 0.4, to: 1, opacity: 0.18, kind: 'toxic-haze' });
+  },
+
+  // Dunes around a pool of water with green palms and ferns.
+  'desert-oasis': canvas => {
+    paintSky(canvas, ['#3a7ac0', '#9ac0dc', '#f0d8a0']);
+    paintSun(canvas, { colour: '#fff4d0', glow: '#ffe6a0' });
+    paintHills(canvas, '#e0b070', { baseY: 108, amplitude: 10 }, 'dunes');
+    paintGround(canvas, { y: 120, top: '#d8a864', bottom: '#c08e50' });
+    const poolX = canvas.between(120, 340);
+    canvas.add(artGroup('pond', [createSvgElement('ellipse', { cx: roundForSvg(poolX), cy: 134, rx: 70, ry: 8, fill: '#3fa8a0' })]));
+    paintPlants(canvas, 5, { minY: 118, maxY: 146, minX: poolX - 110, maxX: poolX + 110 }, ({ x, y, depth }) => buildPalmTree(canvas, x, y, 24 + depth * 30, { trunk: '#8a6a44', fronds: '#3f8a3a' }));
+    paintPlants(canvas, 6, { minY: 126, maxY: 148, minX: poolX - 100, maxX: poolX + 100 }, ({ x, y, depth }) => buildFern(canvas, x, y, 4 + depth * 6, '#4f9a45'));
+  },
+
+  // Grey sand dunes, grey drooping palms and colourless ferns under a grey sky
+  // dominated by a huge eclipsed sun with a pinhole of light.
+  'bleak-oasis': canvas => {
+    paintSky(canvas, ['#4a4a4e', '#7c7c80', '#b4b4b4']);
+    paintEclipsedSun(canvas, { ring: '#f4f4f0', glow: '#d8d8d4' });
+    paintHills(canvas, '#9c9c9c', { baseY: 108, amplitude: 10 }, 'dunes');
+    paintGround(canvas, { y: 120, top: '#929292', bottom: '#7a7a7a' });
+    paintPlants(canvas, 5, { minY: 116, maxY: 146 }, ({ x, y, depth }) => buildPalmTree(canvas, x, y, 24 + depth * 30, { trunk: '#5e5e5e', fronds: '#8a8a8a', droop: 0.9 }));
+    paintPlants(canvas, 6, { minY: 124, maxY: 148 }, ({ x, y, depth }) => buildFern(canvas, x, y, 4 + depth * 6, '#a0a0a0'));
+    paintGrass(canvas, { colour: '#a8a8a8', minY: 124, maxY: 148, count: 20 });
+  },
+
+  // Super Earth: a skyline of towers with lit windows.
+  'super-earth': canvas => {
+    paintSky(canvas, ['#1f3a64', '#4f75a4', '#9ab8dc']);
+    paintClouds(canvas, { colour: '#ffffff', count: 3, opacity: 0.4 });
+    for (const [base, colour, minHeight, maxHeight] of [[112, '#3e5680', 30, 70], [148, '#22324e', 40, 95]]) {
+      let x = -5;
       while (x < BIOME_ART_WIDTH) {
-        const width = randomBetween(random, 18, 42);
-        const height = randomBetween(random, terrain === 'city' ? 30 : 20, terrain === 'city' ? 90 : 55);
-        shapes.push(createSvgElement('rect', { x: x.toFixed(1), y: (BIOME_ART_HEIGHT - height).toFixed(1), width: (width - 3).toFixed(1), height: height.toFixed(1), fill: colours.near }));
-        if (terrain === 'factory' && random() < 0.35) {
-          const chimneyX = x + width / 2;
-          shapes.push(createSvgElement('rect', { x: chimneyX.toFixed(1), y: (BIOME_ART_HEIGHT - height - 26).toFixed(1), width: 6, height: 26, fill: colours.near }));
-          shapes.push(createSvgElement('circle', { cx: (chimneyX + 3).toFixed(1), cy: (BIOME_ART_HEIGHT - height - 34).toFixed(1), r: randomBetween(random, 6, 11).toFixed(1), fill: colours.feature, opacity: 0.45 }));
+        const width = canvas.between(14, 34);
+        const height = canvas.between(minHeight, maxHeight);
+        const lights = [];
+        if (base === 148) {
+          for (let row = 0; row < height / 14; row++) {
+            if (canvas.chance(0.55)) lights.push(`M${roundForSvg(x + canvas.between(3, width - 6))},${roundForSvg(base - height + 6 + row * 12)}h3`);
+          }
         }
-        for (let light = 0, total = Math.floor(height / 22); light < total; light++) {
-          if (random() < 0.5) continue;
-          shapes.push(createSvgElement('rect', { x: (x + randomBetween(random, 3, width - 9)).toFixed(1), y: (BIOME_ART_HEIGHT - height + 6 + light * 20).toFixed(1), width: 4, height: 4, fill: colours.light, opacity: 0.85 }));
-        }
+        canvas.add(artGroup('tower', [
+          createSvgElement('rect', { x: roundForSvg(x), y: roundForSvg(base - height), width: roundForSvg(width - 2), height: roundForSvg(height), fill: colour }),
+          lights.length ? createSvgElement('path', { d: lights.join(''), stroke: '#f5c518', 'stroke-width': 2.2, opacity: 0.85 }) : null,
+        ]));
         x += width;
       }
-      break;
     }
-    case 'hive':
-      shapes.push(buildRidge(random, colours.far, { baseY: 126, amplitude: 8 }));
-      for (let mound = 0, total = count(6, 9); mound < total; mound++) {
-        const x = randomBetween(random, -40, BIOME_ART_WIDTH - 20);
-        const width = randomBetween(random, 60, 120);
-        const height = randomBetween(random, 26, 62);
-        shapes.push(createSvgElement('path', { d: `M${x.toFixed(1)},148 Q${(x + width / 2).toFixed(1)},${(148 - height * 2).toFixed(1)} ${(x + width).toFixed(1)},148 Z`, fill: colours.near }));
-        shapes.push(createSvgElement('ellipse', { cx: (x + width / 2).toFixed(1), cy: (148 - height * 0.55).toFixed(1), rx: (width / 9).toFixed(1), ry: (height / 8).toFixed(1), fill: colours.feature }));
-      }
-      break;
-    case 'bones':
-      shapes.push(buildRidge(random, colours.near, { baseY: 128, amplitude: 10 }));
-      for (let rib = 0, total = count(4, 8); rib < total; rib++) {
-        const x = randomBetween(random, 20, BIOME_ART_WIDTH - 40);
-        const height = randomBetween(random, 20, 40);
-        shapes.push(createSvgElement('path', { d: `M${x.toFixed(1)},134 Q${(x + 12).toFixed(1)},${(134 - height).toFixed(1)} ${(x + 26).toFixed(1)},${(134 - height * 0.6).toFixed(1)}`, stroke: colours.feature, 'stroke-width': 3, fill: 'none', 'stroke-linecap': 'round' }));
-      }
-      break;
-    case 'craters':
-      shapes.push(buildRidge(random, colours.near, { baseY: 122, amplitude: 8 }));
-      for (let crater = 0, total = count(3, 6); crater < total; crater++) {
-        const x = randomBetween(random, 20, BIOME_ART_WIDTH - 20);
-        const y = randomBetween(random, 128, 142);
-        const radius = randomBetween(random, 10, 28);
-        shapes.push(createSvgElement('ellipse', { cx: x.toFixed(1), cy: y.toFixed(1), rx: radius.toFixed(1), ry: (radius / 4).toFixed(1), fill: colours.feature, stroke: colours.far, 'stroke-width': 1.5 }));
-      }
-      break;
-    case 'void': {
-      const centreX = randomBetween(random, 150, 310);
-      shapes.push(createSvgElement('ellipse', { cx: centreX.toFixed(1), cy: 74, rx: 92, ry: 20, fill: 'none', stroke: colours.feature, 'stroke-width': 5, opacity: 0.8 }));
-      shapes.push(createSvgElement('circle', { cx: centreX.toFixed(1), cy: 74, r: 28, fill: colours.skyTop, stroke: colours.light, 'stroke-width': 1.5, 'stroke-opacity': 0.6 }));
-      break;
-    }
-    default:   // 'static': a screen with no signal
-      for (let band = 0; band < 14; band++) {
-        const y = randomBetween(random, 0, BIOME_ART_HEIGHT);
-        shapes.push(createSvgElement('rect', { x: 0, y: y.toFixed(1), width: BIOME_ART_WIDTH, height: randomBetween(random, 1, 5).toFixed(1), fill: colours.light, opacity: randomBetween(random, 0.05, 0.2).toFixed(2) }));
-      }
-  }
-  return shapes;
-}
+  },
 
-// A planet's landscape as an SVG: sky, a sun or stars, far hills, then the
-// terrain's own shapes. Labelled for screen readers as an illustration.
-function buildBiomeArt(biomeName, planetIndex, recipe = getBiomeArtRecipe(biomeName, planetIndex)) {
-  const colours = BIOME_PALETTES[recipe.palette] || BIOME_PALETTES[recipe.terrain] || BIOME_PALETTES.hills;
-  const random = createSeededRandom(hashText(`${recipe.terrain}:${recipe.palette}:${planetIndex ?? biomeName}`));
-  const gradientId = `biome-sky-${++biomeArtCounter}`;
-  const sky = [
-    createSvgElement('defs', {}, [createSvgElement('linearGradient', { id: gradientId, x1: 0, y1: 0, x2: 0, y2: 1 }, [
-      createSvgElement('stop', { offset: '0%', 'stop-color': colours.skyTop }),
-      createSvgElement('stop', { offset: '100%', 'stop-color': colours.skyBottom }),
-    ])]),
-    createSvgElement('rect', { width: BIOME_ART_WIDTH, height: BIOME_ART_HEIGHT, fill: `url(#${gradientId})` }),
-  ];
-  if (BIOME_TERRAINS_WITH_STARS.includes(recipe.terrain) || BIOME_TERRAINS_WITH_STARS.includes(recipe.palette)) {
-    for (let star = 0; star < 18; star++) {
-      sky.push(createSvgElement('circle', { cx: randomBetween(random, 0, BIOME_ART_WIDTH).toFixed(1), cy: randomBetween(random, 0, 80).toFixed(1),
-        r: randomBetween(random, 0.6, 1.6).toFixed(1), fill: colours.light, opacity: randomBetween(random, 0.4, 0.9).toFixed(2) }));
+  // Cyberstan: factory blocks and smoking chimneys under a red sky.
+  cyberstan: canvas => {
+    paintSky(canvas, ['#1c0e10', '#3e1a1a', '#6a2a26']);
+    let x = -5;
+    while (x < BIOME_ART_WIDTH) {
+      const width = canvas.between(20, 44);
+      const height = canvas.between(20, 60);
+      const parts = [createSvgElement('rect', { x: roundForSvg(x), y: roundForSvg(BIOME_ART_HEIGHT - height), width: roundForSvg(width - 3), height: roundForSvg(height), fill: '#1e1416' })];
+      if (canvas.chance(0.4)) {
+        parts.push(createSvgElement('rect', { x: roundForSvg(x + width / 2), y: roundForSvg(BIOME_ART_HEIGHT - height - 26), width: 6, height: 26, fill: '#1e1416' }));
+        parts.push(createSvgElement('circle', { cx: roundForSvg(x + width / 2 + 3), cy: roundForSvg(BIOME_ART_HEIGHT - height - 36), r: roundForSvg(canvas.between(7, 12)), fill: '#4a3434', opacity: 0.55 }));
+      }
+      if (canvas.chance(0.6)) parts.push(createSvgElement('rect', { x: roundForSvg(x + canvas.between(3, width - 9)), y: roundForSvg(BIOME_ART_HEIGHT - height + 6), width: 4, height: 3, fill: '#ff5a4a' }));
+      canvas.add(artGroup('factory', parts));
+      x += width;
     }
-  } else if (recipe.terrain !== 'static') {
-    sky.push(createSvgElement('circle', { cx: randomBetween(random, 40, 420).toFixed(1), cy: randomBetween(random, 22, 50).toFixed(1),
-      r: randomBetween(random, 9, 16).toFixed(1), fill: colours.light, opacity: 0.85 }));
-  }
-  const hasFarHills = !['void', 'static', 'city', 'factory', 'hive'].includes(recipe.terrain);
-  const farHills = hasFarHills
-    ? buildRidge(random, colours.far, { baseY: 98, amplitude: recipe.terrain === 'lava' ? 34 : 22, jaggedness: recipe.terrain === 'lava' ? 0.8 : 0.2 })
-    : null;
+  },
+
+  // Meridia: a black hole with a glowing accretion disc.
+  'black-hole': canvas => {
+    paintSky(canvas, ['#020205', '#05050c', '#0a0a16']);
+    paintStars(canvas, { count: 50, maxY: BIOME_ART_HEIGHT });
+    const x = canvas.between(170, 290);
+    canvas.add(artGroup('black-hole', [
+      createSvgElement('ellipse', { cx: roundForSvg(x), cy: 74, rx: 120, ry: 30, fill: addArtGradient(canvas, [['0%', '#ffb04a', 0.5], ['100%', '#ff6a2a', 0]], true) }),
+      createSvgElement('ellipse', { cx: roundForSvg(x), cy: 74, rx: 96, ry: 18, fill: 'none', stroke: '#ffcf8a', 'stroke-width': 5, opacity: 0.85 }),
+      createSvgElement('circle', { cx: roundForSvg(x), cy: 74, r: 30, fill: '#000000', stroke: '#ffe6b0', 'stroke-width': 1.5 }),
+      createSvgElement('path', { d: `M${roundForSvg(x - 96)},74 a96,18 0 0 0 192,0`, stroke: '#fff0d0', 'stroke-width': 3, fill: 'none', opacity: 0.9 }),
+    ]));
+  },
+
+  // A planet torn apart by the Meridian singularity: rock fragments floating
+  // in space, lit by a purple glow.
+  shattered: canvas => {
+    paintSky(canvas, ['#07060c', '#120e20', '#1c1430']);
+    paintStars(canvas, { count: 40, maxY: BIOME_ART_HEIGHT });
+    canvas.add(createSvgElement('circle', { class: 'art-singularity-glow', cx: roundForSvg(canvas.between(20, 440)), cy: roundForSvg(canvas.between(20, 60)), r: 80, fill: addArtGradient(canvas, [['0%', '#b27aff', 0.5], ['100%', '#6a3aaa', 0]], true) }));
+    for (const { x, y, depth } of scatterByDepth(canvas, 14, { minY: 20, maxY: 140 })) {
+      const size = 3 + depth * 16;
+      const points = [0, 1, 2, 3, 4].map(corner => {
+        const angle = corner / 5 * Math.PI * 2 + canvas.between(-0.3, 0.3);
+        const reach = size * canvas.between(0.6, 1);
+        return `${roundForSvg(x + Math.cos(angle) * reach)},${roundForSvg(y + Math.sin(angle) * reach * 0.8)}`;
+      }).join(' ');
+      canvas.add(artGroup('fragment', [createSvgElement('polygon', { points, fill: mixColours('#3a3444', '#0a0812', 1 - depth), stroke: '#9a7ad0', 'stroke-width': 0.8, 'stroke-opacity': 0.6 })]));
+    }
+  },
+
+  // No data: a screen without a signal.
+  unknown: canvas => {
+    paintSky(canvas, ['#1a1d22', '#22262c', '#2a2f36']);
+    for (let band = 0; band < 14; band++) {
+      canvas.add(createSvgElement('rect', { class: 'art-static', x: 0, y: roundForSvg(canvas.between(0, BIOME_ART_HEIGHT)), width: BIOME_ART_WIDTH,
+        height: roundForSvg(canvas.between(1, 5)), fill: '#8d9ab2', opacity: roundForSvg(canvas.between(0.05, 0.2)) }));
+    }
+  },
+};
+
+// Fog colour per biome, so fog blends with the scene it covers.
+const BIOME_FOG_COLOURS = {
+  deadlands: '#d8d4d4', 'haunted-swamp': '#8a9c92', 'basic-swamp': '#c8d4c0', magma: '#6a2a1a', 'tien-kwan': '#8fa294',
+  'ionic-jungle': '#6a8aaa', 'volcanic-jungle': '#d8e0d8', moon: '#8a8e98',
+};
+
+// A planet's landscape as an SVG: its biome's painter, then its weather.
+// Labelled for screen readers as an illustration.
+function buildBiomeArt(biomeLabel, planetIndex, recipe = getBiomeArtRecipe(biomeLabel, planetIndex)) {
+  const biome = BIOME_PAINTERS[recipe.biome] ? recipe.biome : 'plains';
+  const weather = asArray(recipe.weather);
+  const random = createSeededRandom(hashText(`${biome}:${planetIndex ?? biomeLabel}`));
+  const canvas = createArtCanvas(random, `biome-art-${++biomeArtCounter}`);
+  BIOME_PAINTERS[biome](canvas);
+  paintWeather(canvas, weather, { fogColour: BIOME_FOG_COLOURS[biome] });
   return createSvgElement('svg', {
-    class: `planet-card-biome biome-art biome-${recipe.terrain}`,
+    class: `planet-card-biome biome-art biome-${biome}`,
     viewBox: `0 0 ${BIOME_ART_WIDTH} ${BIOME_ART_HEIGHT}`,
     preserveAspectRatio: 'xMidYMid slice',
     role: 'img',
-    'aria-label': `${biomeName} (drawn illustration)`,
-    'data-terrain': recipe.terrain,
-    'data-palette': recipe.palette,
-  }, [...sky, farHills, ...buildBiomeFeatures(recipe.terrain, colours, random)]);
+    'aria-label': `${biomeLabel} (drawn illustration)`,
+    'data-biome': biome,
+    'data-weather': weather.join(' '),
+  }, [createSvgElement('defs', {}, canvas.definitions), ...canvas.shapes]);
 }
 
 // Any faction spelling → 'automaton' | 'terminids' | 'illuminate' | 'humans' | null.
@@ -1888,9 +3065,9 @@ function describeReward(reward) {
 
 // ── PLANET CARDS (TASKS 1) ───────────────────────────────────────────────────
 
-// The landscape at the top of a planet card, drawn from its biome.
+// The landscape at the top of a planet card, drawn from its biome and weather.
 function buildBiomeBanner(planet) {
-  return buildBiomeArt(getBiomeDisplayName(planet), planet.index, getBiomeArtRecipe(planet.biome?.name, planet.index));
+  return buildBiomeArt(getBiomeDisplayName(planet), planet.index, getBiomeArtRecipe(planet.biome?.name, planet.index, planet.hazards));
 }
 
 // Chips for weather hazards and known planet effects ("Tremors", "Jet Brigade").
