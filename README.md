@@ -1,5 +1,7 @@
 # DropIntel
 
+By [MrHamster112](https://github.com/MrHamster112).
+
 A fan-made war tracker for Helldivers 2: the Major Order, planets under attack, where to drop
 next, a galactic war map, gambit analysis per front and a field guide.
 
