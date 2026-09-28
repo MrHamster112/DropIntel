@@ -5344,22 +5344,44 @@ const GEMINI_PROVIDER = {
   keyHelpUrl: 'https://aistudio.google.com/apikey',
   modelListUrl: 'https://ai.google.dev/gemini-api/docs/models',
 
+  // Room for the model's thinking plus a short answer: thinking counts against it.
+  maxOutputTokens: 8192,
+
+  // How hard the model may think before it answers. Gemini 3 models think at
+  // "high" by default, and that thinking can use up the whole maxOutputTokens,
+  // leaving no answer at all (it failed that way on some fronts and not others).
+  // A short overview needs little thinking. Gemini 3 and later take a level,
+  // 2.5 takes a token budget, older models don't think.
+  thinkingConfigFor(model) {
+    const generation = Number((/^gemini-(\d+(?:\.\d+)?)/.exec(model) || [])[1]);
+    if (generation >= 3) return { thinkingLevel: 'low' };
+    if (generation >= 2.5) return { thinkingBudget: 1024 };
+    return null;
+  },
+
   // URL and fetch options for one prompt. The key goes in a header, not the
   // URL, so it can't end up in logs or the browser history.
-  buildRequest(apiKey, model, systemText, userText) {
+  buildRequest(apiKey, model, systemText, userText, { withThinkingConfig = true } = {}) {
+    const thinkingConfig = withThinkingConfig ? this.thinkingConfigFor(model) : null;
     return {
       url: `${this.origin}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      sentThinkingConfig: Boolean(thinkingConfig),
       options: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemText }] },
           contents: [{ role: 'user', parts: [{ text: userText }] }],
-          // room for the model's own thinking plus a short answer
-          generationConfig: { maxOutputTokens: 4096 },
+          generationConfig: { maxOutputTokens: this.maxOutputTokens, ...(thinkingConfig ? { thinkingConfig } : {}) },
         }),
       },
     };
+  },
+
+  // True when a failed call was about the thinking setting, so it is worth one
+  // more try without it (a model that doesn't take that kind of setting).
+  rejectedThinkingConfig(status, body) {
+    return status === 400 && /thinking/i.test(String(body?.error?.message || ''));
   },
 
   // The reply's text from a successful response body; throws with the reason otherwise.
@@ -5370,6 +5392,9 @@ const GEMINI_PROVIDER = {
     const text = asArray(candidate?.content?.parts)
       .filter(part => typeof part?.text === 'string' && !part.thought)
       .map(part => part.text).join('').trim();
+    if (!text && candidate?.finishReason === 'MAX_TOKENS') {
+      throw new Error('Gemini used up its answer length thinking and wrote nothing (finish reason: MAX_TOKENS). Ask again; if it keeps happening, try another model.');
+    }
     if (!text) throw new Error(`Gemini sent no text (finish reason: ${candidate?.finishReason || 'unknown'}).`);
     return text;
   },
@@ -5500,9 +5525,10 @@ function describeMajorOrderFocus(factionKey, assignments = apiData.assignments) 
 }
 
 // Sends one prompt to the provider and returns the reply text. The request
-// goes to LLM_PROVIDER.origin only, and times out rather than hang.
-async function askLlm(apiKey, model, prompt) {
-  const request = LLM_PROVIDER.buildRequest(apiKey, model, prompt.systemText, prompt.userText);
+// goes to LLM_PROVIDER.origin only, and times out rather than hang. If the model
+// refuses the thinking setting, it asks once more without it.
+async function askLlm(apiKey, model, prompt, { withThinkingConfig = true } = {}) {
+  const request = LLM_PROVIDER.buildRequest(apiKey, model, prompt.systemText, prompt.userText, { withThinkingConfig });
   if (!request.url.startsWith(`${LLM_PROVIDER.origin}/`)) throw new Error('Refused to send the key anywhere but the provider.');
 
   const abortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -5518,6 +5544,9 @@ async function askLlm(apiKey, model, prompt) {
   }
   // error bodies are usually JSON too, but a proxy's may not be
   const body = await response.json().catch(() => null);
+  if (!response.ok && request.sentThinkingConfig && LLM_PROVIDER.rejectedThinkingConfig(response.status, body)) {
+    return askLlm(apiKey, model, prompt, { withThinkingConfig: false });
+  }
   if (!response.ok) throw new Error(LLM_PROVIDER.describeFailure(response.status, body, model));
   return LLM_PROVIDER.readReply(body);
 }
