@@ -136,8 +136,8 @@
         <div id="output-gambits" class="gambit-grid"></div>
         <p id="llm-announcer" class="visually-hidden" aria-live="polite"></p>
         <details class="llm-settings" id="llm-settings">
-          <summary>Optional: AI-written summaries with your own Google Gemini key</summary>
-          <p>Off by default. With a key, each front gets an "Ask Gemini" button that sends that front's analysis (the numbers and reasons above) to Google's Gemini API and shows the reply, labelled as AI-written. The analysis above never depends on it.</p>
+          <summary>Optional: AI overview for bonus info, with your own Google Gemini key</summary>
+          <p>Off by default. The AI overview is bonus info on top of the analysis above. With a key, each front gets an "Ask Gemini" button that sends that front's analysis (the numbers and reasons above) to Google's Gemini API and shows the reply, labelled as AI-written. On top of each overview the page adds a Major Order note, taken from the order itself: if the order wants another front right now, it says to focus there, and the normal overview of the front you asked about follows. The analysis above never depends on it.</p>
           <ul class="llm-facts">
             <li>Get a key at <a href="https://aistudio.google.com/apikey" rel="noopener noreferrer" target="_blank">aistudio.google.com/apikey</a>. Google's free tier has daily limits.</li>
             <li>The key is kept in this browser's local storage, on this device only. It is sent to <code>generativelanguage.googleapis.com</code> and nowhere else, and only when you press an Ask button.</li>

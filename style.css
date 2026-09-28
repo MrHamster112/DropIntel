@@ -609,6 +609,18 @@ svg.war-map { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; ma
   background: var(--surface-raised);
   padding: 10px 12px;
 }
+.llm-hint { margin: 0; font-size: 0.85rem; color: var(--text-muted); }
+/* The Major Order note on top of an AI overview: from the order, so styled like the MO card, not the AI text. */
+.llm-major-order {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+.llm-major-order .status-icon { color: var(--accent); margin-right: 4px; }
+.llm-source { color: var(--text-muted); font-size: 0.85rem; }
 .llm-label { margin: 0 0 6px; font-size: 0.85rem; color: var(--text-secondary); }
 .llm-label .status-icon { color: var(--status-warning); margin-right: 4px; }
 .llm-label strong { color: var(--text-primary); }

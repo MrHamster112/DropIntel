@@ -47,7 +47,12 @@ const DEFENSE_MINIMUM_ELAPSED_FOR_AVERAGE_MILLISECONDS = 10 * 60 * 1000;
 
 const FACTION_NAME_BY_ID = { 1: 'Humans', 2: 'Terminids', 3: 'Automaton', 4: 'Illuminate' };
 
-const TASK_VALUE_TYPE = { FACTION_ID: 1, TARGET_AMOUNT: 3, PLANET_INDEX: 12 };
+const TASK_VALUE_TYPE = { FACTION_ID: 1, TARGET_AMOUNT: 3, LOCATION_TYPE: 11, LOCATION_INDEX: 12 };
+
+// What value type 11 says value type 12 is. A galaxy-wide "kill 25M Terminids"
+// carries location type 0 and index 0, and index 0 there is not Super Earth.
+// (Read this way by community tools such as the Galactic Wide Web bot.)
+const TASK_LOCATION_TYPE = { NONE: 0, PLANET: 1, SECTOR: 2 };
 
 // Only the task types documented in README.md; anything else is described generically.
 const TASK_TYPE = { ERADICATE: 3, COMPLETE_OPERATIONS: 9, LIBERATE_PLANET: 11, HOLD_PLANET: 13 };
@@ -328,6 +333,25 @@ function getTaskValue(task, valueTypeId) {
   const position = (task.valueTypes || []).indexOf(valueTypeId);
   if (position === -1) return null;
   return (task.values || [])[position];
+}
+
+// Where a task has to be done: a planet index, a sector index, or neither when
+// it counts anywhere. The location type (value type 11) says what the index is.
+// A task without one names a planet if it is a liberate/hold task, or if the
+// index isn't 0 (0 is only Super Earth when the location type says so).
+function getTaskLocation(task) {
+  const location = { planetIndex: null, sectorIndex: null };
+  const locationIndex = getTaskValue(task, TASK_VALUE_TYPE.LOCATION_INDEX);
+  if (!isFiniteNumber(locationIndex)) return location;
+  const locationType = getTaskValue(task, TASK_VALUE_TYPE.LOCATION_TYPE);
+  if (isFiniteNumber(locationType)) {
+    if (locationType === TASK_LOCATION_TYPE.PLANET) location.planetIndex = locationIndex;
+    else if (locationType === TASK_LOCATION_TYPE.SECTOR) location.sectorIndex = locationIndex;
+    return location;
+  }
+  const isPlanetTask = task.type === TASK_TYPE.LIBERATE_PLANET || task.type === TASK_TYPE.HOLD_PLANET;
+  if (isPlanetTask || locationIndex !== 0) location.planetIndex = locationIndex;
+  return location;
 }
 
 // Effect ID → readable name, e.g. 1310 → "Rupture Strain".
@@ -2697,7 +2721,7 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
   const factionKeys = new Set();
   for (const assignment of asArray(assignments)) {
     for (const task of asArray(assignment.tasks)) {
-      const planetIndex = getTaskValue(task, TASK_VALUE_TYPE.PLANET_INDEX);
+      const { planetIndex } = getTaskLocation(task);
       const factionId   = getTaskValue(task, TASK_VALUE_TYPE.FACTION_ID);
       if (isFiniteNumber(planetIndex)) {
         planetIndexes.add(planetIndex);
@@ -2713,10 +2737,12 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
 // Turns one assignment task into a sentence and a progress figure.
 function describeAssignmentTask(task, progressValue) {
   const targetAmount = getTaskValue(task, TASK_VALUE_TYPE.TARGET_AMOUNT);
-  const planetIndex  = getTaskValue(task, TASK_VALUE_TYPE.PLANET_INDEX);
+  const { planetIndex, sectorIndex } = getTaskLocation(task);
   const factionId    = getTaskValue(task, TASK_VALUE_TYPE.FACTION_ID);
   const planet       = isFiniteNumber(planetIndex) ? apiData.planetsByIndex[planetIndex] : null;
   const planetName   = planet ? planet.name : (isFiniteNumber(planetIndex) ? `planet #${planetIndex}` : null);
+  // Sector names aren't in the feeds by index, so a sector is named by its number.
+  const placeText    = planetName ? ` on ${planetName}` : (isFiniteNumber(sectorIndex) ? ` in sector #${sectorIndex}` : '');
   const factionName  = isFiniteNumber(factionId) ? (FACTION_NAME_BY_ID[factionId] || null) : null;
   const progress     = isFiniteNumber(progressValue) ? progressValue : 0;
 
@@ -2726,6 +2752,7 @@ function describeAssignmentTask(task, progressValue) {
     progressText: '',
     isComplete: false,
     planetIndex: isFiniteNumber(planetIndex) ? planetIndex : null,
+    sectorIndex: isFiniteNumber(sectorIndex) ? sectorIndex : null,
     factionName,
   };
 
@@ -2747,15 +2774,13 @@ function describeAssignmentTask(task, progressValue) {
   }
 
   if (task.type === TASK_TYPE.ERADICATE) {
-    description.sentence = `Kill ${formatBigNumber(targetAmount)} ${factionName || 'enemies'}`
-      + (planetName ? ` on ${planetName}` : '');
+    description.sentence = `Kill ${formatBigNumber(targetAmount)} ${factionName || 'enemies'}${placeText}`;
   } else if (task.type === TASK_TYPE.COMPLETE_OPERATIONS) {
     description.sentence = `Complete ${formatBigNumber(targetAmount)} operations`
-      + (factionName ? ` against the ${factionName}` : '')
-      + (planetName ? ` on ${planetName}` : '');
+      + (factionName ? ` against the ${factionName}` : '') + placeText;
   } else {
     // Unknown task type: say what we know without guessing what it means.
-    const details = [planetName, factionName].filter(Boolean).join(', ');
+    const details = [planetName, isFiniteNumber(sectorIndex) ? `sector #${sectorIndex}` : null, factionName].filter(Boolean).join(', ');
     description.sentence = `Objective (type ${task.type ?? '?'})` + (details ? `: ${details}` : '');
   }
 
@@ -5429,6 +5454,51 @@ function buildGambitPrompt(analysis) {
   return { systemText, userText: lines.join('\n') };
 }
 
+// "a", "a and b", "a, b and c".
+function joinInWords(items) {
+  return items.length <= 1 ? (items[0] || '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+// The Major Order's unfinished tasks, grouped by the enemy front each one
+// points at: {factionKey: [task descriptions]}. A task on a planet belongs to
+// that planet's enemy; a task without one, to the faction it names. Tasks for
+// no enemy front (holding a quiet planet of ours) are left out.
+function groupOpenMajorOrderTasksByFront(assignments = apiData.assignments) {
+  const tasksByFront = {};
+  for (const assignment of asArray(assignments)) {
+    asArray(assignment.tasks).forEach((task, taskPosition) => {
+      const described = describeAssignmentTask(task, asArray(assignment.progress)[taskPosition]);
+      if (described.isComplete) return;
+      const planet = described.planetIndex !== null ? apiData.planetsByIndex[described.planetIndex] : null;
+      const factionKey = planet ? getEnemyFactionOnPlanet(planet) : normalizeFactionName(described.factionName);
+      if (!factionKey) return;
+      if (!tasksByFront[factionKey]) tasksByFront[factionKey] = [];
+      tasksByFront[factionKey].push(described);
+    });
+  }
+  return tasksByFront;
+}
+
+// The Major Order note on top of an AI overview, worked out by the page from
+// the order itself (not by the AI): whether the order counts this front, or
+// which fronts it wants instead. Null when no unfinished task points at a front.
+function describeMajorOrderFocus(factionKey, assignments = apiData.assignments) {
+  const tasksByFront = groupOpenMajorOrderTasksByFront(assignments);
+  const orderFronts = FRONT_ORDER.filter(front => tasksByFront[front]);
+  if (orderFronts.length === 0) return null;
+  const listTasks = tasks => tasks.map(task => task.sentence
+    + (task.progressPercent !== null ? ` (${formatPercent(task.progressPercent, 0)} done)` : '')).join('; ');
+  if (tasksByFront[factionKey]) {
+    return { countsThisFront: true,
+      text: `this front counts for it: ${listTasks(tasksByFront[factionKey])}. Dropping here helps the order.` };
+  }
+  const wanted = orderFronts.map(front => `the ${getFactionDisplayName(front)}`);
+  return { countsThisFront: false,
+    text: `it wants ${joinInWords(wanted)} right now, not the ${getFactionDisplayName(factionKey)}: `
+      + `${orderFronts.map(front => listTasks(tasksByFront[front])).join('; ')}. `
+      + `Focus there to help it most. The normal overview of the ${getFactionDisplayName(factionKey)} front is below.` };
+}
+
 // Sends one prompt to the provider and returns the reply text. The request
 // goes to LLM_PROVIDER.origin only, and times out rather than hang.
 async function askLlm(apiKey, model, prompt) {
@@ -5478,14 +5548,15 @@ async function requestLlmCommentary(factionKey, nowTimestamp = Date.now()) {
   try {
     const reply = await askLlm(apiKey, model, buildGambitPrompt(analyseFront(factionKey, nowTimestamp)));
     const text = reply.length > LLM_REPLY_CHARACTER_LIMIT ? `${reply.slice(0, LLM_REPLY_CHARACTER_LIMIT)}…` : reply;
-    return finish({ status: 'done', text });
+    return finish({ status: 'done', text, majorOrderFocus: describeMajorOrderFocus(factionKey) });
   } catch (error) {
     return finish({ status: 'failed', errorMessage: error.message || 'Unknown error.' });
   }
 }
 
-// The AI part of one front's panel: an Ask button when a key is saved, then
-// the labelled reply or the reason it failed. Nothing at all without a key.
+// The AI part of one front's panel: an Ask button when a key is saved, then the
+// AI overview (a Major Order note on top, the labelled reply under it) or the
+// reason it failed. Nothing at all without a key.
 function buildLlmCommentaryBlock(factionKey) {
   const { apiKey } = readLlmSettings();
   const entry = llmCommentaryByFaction[factionKey];
@@ -5498,9 +5569,19 @@ function buildLlmCommentaryBlock(factionKey) {
     attributes: { type: 'button', 'data-llm-faction': factionKey, disabled: isLoading, 'aria-busy': isLoading ? 'true' : null },
   }) : null;
 
+  const hint = apiKey ? buildElement('p', { className: 'llm-hint',
+    text: 'Bonus info: an AI overview of this front, with a Major Order note on top when the order wants you elsewhere.' }) : null;
+
   let result = null;
   if (entry?.status === 'done') {
-    result = buildElement('aside', { className: 'llm-commentary', attributes: { 'aria-label': 'AI-written summary' } }, [
+    const focus = entry.majorOrderFocus;
+    result = buildElement('aside', { className: 'llm-commentary', attributes: { 'aria-label': 'AI overview' } }, [
+      focus ? buildElement('p', { className: `llm-major-order${focus.countsThisFront ? ' counts-this-front' : ''}` }, [
+        buildElement('span', { className: 'status-icon', text: '★', attributes: { 'aria-hidden': 'true' } }),
+        buildElement('strong', { text: 'Major Order: ' }),
+        focus.text,
+        buildElement('span', { className: 'llm-source', text: ' (From the order itself, not AI.)' }),
+      ]) : null,
       buildElement('p', { className: 'llm-label' }, [
         buildElement('span', { className: 'status-icon', text: '⚠', attributes: { 'aria-hidden': 'true' } }),
         buildElement('strong', { text: 'AI-written, can be wrong. ' }),
@@ -5513,14 +5594,14 @@ function buildLlmCommentaryBlock(factionKey) {
     result = buildStatusLine({ status: 'warning', icon: '⚠',
       text: `No AI summary: ${entry.errorMessage} The analysis above doesn't need it.` }, 'verdict llm-error');
   }
-  return buildElement('div', { className: 'llm-block' }, [askButton, result]);
+  return buildElement('div', { className: 'llm-block' }, [askButton, hint, result]);
 }
 
 // Shows whether a key is saved (never the key itself, only its last 4 characters).
 function describeLlmSettings() {
   const { apiKey, model } = readLlmSettings();
   return apiKey
-    ? `Key saved in this browser (ending …${apiKey.slice(-4)}), model ${model}. Ask buttons are on each front.`
+    ? `Key saved in this browser (ending …${apiKey.slice(-4)}), model ${model}. Ask buttons for an AI overview are on each front.`
     : 'No key saved: AI summaries are off, and the local analysis is all you\'ll see.';
 }
 
