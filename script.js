@@ -47,7 +47,12 @@ const DEFENSE_MINIMUM_ELAPSED_FOR_AVERAGE_MILLISECONDS = 10 * 60 * 1000;
 
 const FACTION_NAME_BY_ID = { 1: 'Humans', 2: 'Terminids', 3: 'Automaton', 4: 'Illuminate' };
 
-const TASK_VALUE_TYPE = { FACTION_ID: 1, TARGET_AMOUNT: 3, LOCATION_TYPE: 11, LOCATION_INDEX: 12 };
+// What each number in a Major Order task means (helldivers-2/json's
+// assignments/tasks/task/valueTypes.json; min players as the Galactic Wide Web bot reads it).
+const TASK_VALUE_TYPE = {
+  FACTION_ID: 1, TARGET_AMOUNT: 3, UNIT_ID: 4, ITEM_ID: 5, MIN_PLAYERS: 8, DIFFICULTY: 9,
+  LOCATION_TYPE: 11, LOCATION_INDEX: 12,
+};
 
 // What value type 11 says value type 12 is. A galaxy-wide "kill 25M Terminids"
 // carries location type 0 and index 0, and index 0 there is not Super Earth.
@@ -56,6 +61,150 @@ const TASK_LOCATION_TYPE = { NONE: 0, PLANET: 1, SECTOR: 2 };
 
 // Only the task types documented in README.md; anything else is described generically.
 const TASK_TYPE = { ERADICATE: 3, COMPLETE_OPERATIONS: 9, LIBERATE_PLANET: 11, HOLD_PLANET: 13 };
+
+// Enemy unit id (task value type 4) → [one, many], so a task can say "Kill 5M Hive
+// Guards" instead of just the faction. From the Galactic Wide Web bot's
+// data/json/enemies/enemy_ids.json (github.com/Stonemercy/Galactic-Wide-Web); the owner
+// can name new ones in major-order-fixes.js. (One plural there named another unit; fixed.)
+const ENEMY_NAMES_BY_UNIT_ID = {
+  1371180916: ['Agitator', 'Agitators'], 570845236: ['Alpha Commander', 'Alpha Commanders'],
+  1129879701: ['Alpha Commander', 'Alpha Commanders'], 3251507636: ['Annihilator Tank', 'Annihilator Tanks'],
+  3455009224: ['Annihilator Tank', 'Annihilator Tanks'], 3792924074: ['Appropriators', 'Appropriators'],
+  1467464627: ['Assault Raider', 'Assault Raiders'], 4155034467: ['Assault Raider', 'Assault Raiders'],
+  2649067399: ['Automaton Mortar Emplacement', 'Automaton Mortar Emplacements'],
+  1289920842: ['Ballistic Missile', 'Ballistic Missiles'], 1000280911: ['Barrager Tank', 'Barrager Tanks'],
+  3921592399: ['Barrager Tank', 'Barrager Tanks'], 1264796786: ['Berserker', 'Berserkers'],
+  3201222154: ['Berserker', 'Berserkers'], 717622970: ['Bile Spewer', 'Bile Spewers'],
+  1379865898: ['Bile Spewer', 'Bile Spewers'], 2255668545: ['Bile Spewer', 'Bile Spewers'],
+  444529084: ['Bile Spitter', 'Bile Spitters'], 843164597: ['Bile Spitter', 'Bile Spitters'],
+  839087686: ['Bile Titan', 'Bile Titans'], 2514244534: ['Bile Titan', 'Bile Titans'],
+  1453367020: ['Bile Warrior', 'Bile Warriors'], 3365898186: ['Bile Warrior', 'Bile Warriors'],
+  1625228342: ['Brawler', 'Brawlers'], 1974334302: ['Brawler', 'Brawlers'],
+  957043117: ['Brood Commander', 'Brood Commanders'], 3077749065: ['Brood Commander', 'Brood Commanders'],
+  4211972166: ['Brood Commander', 'Brood Commanders'], 208056545: ['Bulk Fabricator', 'Bulk Fabricators'],
+  3921936527: ['Bunker Turret', 'Bunker Turrets'], 478200978: ['Cannon Turret', 'Cannon Turrets'],
+  1299714559: ['Charger', 'Chargers'], 2651633799: ['Charger', 'Chargers'], 2724699650: ['Charger', 'Chargers'],
+  3860493587: ['Charger', 'Chargers'], 1076678822: ['Charger Behemoth', 'Charger Behemoths'],
+  1289790787: ['Charger Bull', 'Charger Bulls'], 621159586: ['Commissar', 'Commissars'],
+  2521687525: ['Commissar', 'Commissars'], 364931179: ['Conflagration Devastator', 'Conflagration Devastators'],
+  1784440447: ['Conflagration Devastator', 'Conflagration Devastators'],
+  3498181594: ['Conflagration Devastator', 'Conflagration Devastators'],
+  3162264097: ['Crescent Overseer', 'Crescent Overseers'], 3877563222: ['Crescent Overseer', 'Crescent Overseers'],
+  3922421925: ['Crusher', 'Crushers'], 141977090: ['Cyborgs', 'Cyborgs'], 565587391: ['Devastator', 'Devastators'],
+  1649987991: ['Devastator', 'Devastators'], 2176809320: ['Devastator', 'Devastators'],
+  4276710272: ['Devastator', 'Devastators'], 1378841226: ['Dragonroach', 'Dragonroaches'],
+  2681574458: ['Dragonroaches', 'Dragonroaches'], 554367013: ['Dropship', 'Dropships'],
+  3884747845: ['Dropship', 'Dropships'], 2745056259: ['Elevated Overseer', 'Elevated Overseers'],
+  3699579456: ['Elevated Overseer', 'Elevated Overseers'], 1054068826: ['Factory Strider', 'Factory Striders'],
+  1153658728: ['Factory Strider', 'Factory Striders'], 1508800662: ['Fleshmob', 'Fleshmobs'],
+  2880434041: ['Fleshmob', 'Fleshmobs'], 3541110630: ['Fleshmob', 'Fleshmobs'],
+  1870840792: ['Gatekeeper', 'Gatekeepers'], 437176070: ['Gunship', 'Gunships'], 1932062202: ['Gunship', 'Gunships'],
+  1405979473: ['Harvester', 'Harvesters'], 2340896389: ['Harvester', 'Harvesters'],
+  1925535306: ['Heavy Armor', 'Heavy Armor'], 398976798: ['Heavy Devastator', 'Heavy Devastators'],
+  3257396446: ['Heavy Devastator', 'Heavy Devastators'], 3126357841: ['Heavy SEAF Presence', 'Heavy SEAF Presence'],
+  626718113: ['Hive Guard', 'Hive Guards'], 2985056363: ['Hive Guard', 'Hive Guards'],
+  3929716830: ['Hive Lord', 'Hive Lords'], 424440415: ['Hive Lords', 'Hive Lords'], 471929602: ['Hulk', 'Hulks'],
+  790541304: ['Hulk', 'Hulks'], 819295132: ['Hulk', 'Hulks'], 613980508: ['Hulk Bruiser', 'Hulk Bruisers'],
+  3857136067: ['Hulk Bruiser', 'Hulk Bruisers'], 1181272016: ['Hulk Firebomber', 'Hulk Firebombers'],
+  2090691137: ['Hulk Firebomber', 'Hulk Firebombers'], 854147169: ['Hulk Obliterator', 'Hulk Obliterators'],
+  1560770730: ['Hulk Obliterator', 'Hulk Obliterators'], 1775662925: ['Hulk Scorcher', 'Hulk Scorchers'],
+  2976047544: ['Hulk Scorcher', 'Hulk Scorchers'], 3330362068: ['Hunter', 'Hunters'],
+  3517152816: ['Hunter', 'Hunters'], 769209189: ['Impaler', 'Impalers'], 1046000873: ['Impaler', 'Impalers'],
+  75849082: ['Incendiary MG Devastator', 'Incendiary MG Devastators'],
+  1262004523: ['Incendiary MG Devastator', 'Incendiary MG Devastators'],
+  1703232728: ['Incineration Corps', 'Incineration Corps'], 872028856: ['Invasion Fleet', 'Invasion Fleet'],
+  2922304745: ['Jet Brigade', 'Jet Brigade'], 1912255141: ['Leviathan', 'Leviathans'],
+  3097344451: ['Leviathan', 'Leviathans'], 3587465014: ['Leviathan', 'Leviathans'],
+  1271321738: ['Lightning Spire', 'Lightning Spires'], 586021653: ['MG Raider', 'MG Raiders'],
+  1599552702: ['MG Raider', 'MG Raiders'], 349105144: ['Marauder', 'Marauders'],
+  2454424572: ['Marauder', 'Marauders'], 35348659: ['Mindless Masses', 'Mindless Masses'],
+  487985459: ['Nursing Spewer', 'Nursing Spewers'], 1837263553: ['Nursing Spewer', 'Nursing Spewers'],
+  1764323819: ['One True Flag', 'One True Flags'], 3621116014: ['Orbtruder', 'Orbtruders'],
+  1899936906: ['Overseer', 'Overseers'], 3235582888: ['Overseer', 'Overseers'],
+  3619404483: ['Overseer', 'Overseers'], 3635671436: ['Overship', 'Overships'],
+  4134104203: ['Overship', 'Overships'], 908216632: ['Pouncer', 'Pouncers'], 4236837183: ['Pouncer', 'Pouncers'],
+  1229149324: ['Predator Hunter', 'Predator Hunters'], 3029738043: ['Predator Hunter', 'Predator Hunters'],
+  112786645: ['Predator Stalker', 'Predator Stalkers'], 4106686024: ['Predator Stalker', 'Predator Stalkers'],
+  2313485354: ['Predator Strain', 'Predator Strain'], 585039032: ['Pyro Trooper', 'Pyro Troopers'],
+  1127649354: ['Pyro Trooper', 'Pyro Troopers'], 2861014363: ['Pyro Trooper', 'Pyro Troopers'],
+  23741406: ['Radical', 'Radicals'], 2000862158: ['Raider', 'Raiders'],
+  1178047811: ['Reinforced Scout Strider', 'Reinforced Scout Striders'],
+  1871700431: ['Reinforced Scout Strider', 'Reinforced Scout Striders'],
+  2365630221: ['Rocket Devastator', 'Rocket Devastators'], 2886459219: ['Rocket Devastator', 'Rocket Devastators'],
+  1593396044: ['Rocket Raider', 'Rocket Raiders'], 3112705780: ['Rocket Raider', 'Rocket Raiders'],
+  3903153972: ['Rupture Charger', 'Rupture Chargers'], 2270698456: ['Rupture Spewer', 'Rupture Spewers'],
+  2423391486: ['Rupture Strain', 'Rupture Strain'], 953392591: ['Rupture Warrior', 'Rupture Warriors'],
+  1333134146: ['SEAF Soldier', 'SEAF Soldiers'], 1977685950: ['SEAF Soldier', 'SEAF Soldiers'],
+  3478611010: ['Scavenger', 'Scavengers'], 4212839382: ['Scavenger', 'Scavengers'],
+  2319746535: ['Scout Raider', 'Scout Raiders'], 20706814: ['Scout Strider', 'Scout Striders'],
+  2252238823: ['Scout Strider', 'Scout Striders'], 1370595971: ['Shredder Tank', 'Shredder Tanks'],
+  2664856027: ['Shredder Tank', 'Shredder Tanks'], 3635343795: ['Shredder Tank', 'Shredder Tanks'],
+  793026793: ['Shrieker', 'Shriekers'], 2519355991: ['Shrieker', 'Shriekers'],
+  333947844: ['Spore Burst Hunter', 'Spore Burst Hunters'],
+  1210082392: ['Spore Burst Hunter', 'Spore Burst Hunters'],
+  1428114468: ['Spore Burst Scavenger', 'Spore Burst Scavengers'],
+  2842755544: ['Spore Burst Scavenger', 'Spore Burst Scavengers'],
+  2745424799: ['Spore Burst Strain', 'Spore Burst Strains'],
+  512390556: ['Spore Burst Warrior', 'Spore Burst Warriors'],
+  2115960485: ['Spore Burst Warrior', 'Spore Burst Warriors'], 1939105083: ['Spore Charger', 'Spore Chargers'],
+  3764892677: ['Spore Charger', 'Spore Chargers'], 1571860610: ['Stalker', 'Stalkers'],
+  2387277009: ['Stalker', 'Stalkers'], 3837895314: ['Stingray', 'Stingrays'], 4160806915: ['Stingray', 'Stingrays'],
+  878778730: ['Trooper', 'Troopers'], 1678159601: ['Trooper', 'Troopers'], 4039692928: ['Trooper', 'Troopers'],
+  3776682558: ['Veracitor', 'Veracitors'], 4253783814: ['Vote Snatchers', 'Vote Snatchers'],
+  4211847317: ['Voteless', 'Voteless'], 4066406510: ['Vox Engine', 'Vox Engines'],
+  523260929: ['War Strider', 'War Striders'], 3216070267: ['War Strider', 'War Striders'],
+  1511926116: ['Warp Ship', 'Warp Ships'], 3579113113: ['Warp Ship', 'Warp Ships'],
+  100334534: ['Warrior', 'Warriors'], 563427185: ['Warrior', 'Warriors'], 2058088313: ['Warrior', 'Warriors'],
+  2478129961: ['Warrior', 'Warriors'], 2912133180: ['Warrior', 'Warriors'], 3564923972: ['Warrior', 'Warriors'],
+  886803190: ['Watcher', 'Watchers'], 921769811: ['Watcher', 'Watchers'], 2218141647: ['Watcher', 'Watchers'],
+  2118086817: ['Wretch', 'Wretches'],
+};
+
+// Stratagem id (task value type 5) → name, for "Kill 25M Terminids using the TD-110
+// Maelstrom". From the same bot's data/lists.py; new ones go in major-order-fixes.js.
+const STRATAGEM_NAME_BY_ITEM_ID = {
+  4080785205: '40-K Meltagun', 2616066963: 'A/AC-8 Autocannon Sentry', 1671728820: 'A/ARC-3 Tesla Tower',
+  669794144: 'A/FLAM-40 Flame Sentry', 2446402932: 'A/G-16 Gatling Sentry', 3428286935: 'A/GM-17 Gas Mortar Sentry',
+  914471076: 'A/LAS-98 Laser Sentry', 461790327: 'A/M-12 Mortar Sentry', 3157053145: 'A/M-23 EMS Mortar Sentry',
+  1228689284: 'A/MG-43 Machine Gun Sentry', 3467463065: 'A/MLS-4X Rocket Sentry', 841182351: 'AC-8 Autocannon',
+  376960160: 'APW-1 Anti-Materiel Rifle', 2138935687: 'ARC-3 Arc Thrower', 3791047893: 'AX/AR-23 Guard Dog',
+  2686392625: 'AX/ARC-3 K-9', 4252990341: 'AX/FLAM-75 Hot Dog', 4277455125: 'AX/LAS-5 Rover',
+  3484474549: 'AX/TX-13 Dog Breath', 336620886: 'B-1 Supply Pack', 66059712: 'B-100 Portable Hellbomb',
+  2427670661: 'B/FLAM-80 Cremator', 3413503378: 'B/MD C4 Pack', 1247082912: 'CQC-1 One True Flag',
+  2771075958: 'CQC-20 Breaching Hammer', 1214427163: 'CQC-9 Defoliation Tool', 1788177336: 'Dark Fluid Vessel',
+  3106925116: 'E/AT-12 Anti-Tank Emplacement', 1736727415: 'E/GL-21 Grenadier Battlement',
+  3827587060: 'E/MG-101 HMG Emplacement', 1207425221: 'EAT-17 Expendable Anti-Tank', 4095488231: 'EAT-411 Leveller',
+  4189624954: 'EAT-700 Expendable Napalm', 3857719901: 'EXO-45 Patriot Exosuit',
+  754365924: 'EXO-49 Emancipator Exosuit', 1299305542: 'EXO-51 Lumberer Exosuit',
+  841332828: 'EXO-55 Breakthrough Exosuit', 3723465233: 'Eagle 110mm Rocket Pods', 1982351727: 'Eagle 500kg Bomb',
+  700547364: 'Eagle Airstrike', 1220665708: 'Eagle Cluster Bomb', 2961949068: 'Eagle Gas Airstrike',
+  1427614189: 'Eagle Napalm Airstrike', 3064457538: 'Eagle Rearm', 1062482104: 'Eagle Smoke Strike',
+  2025422424: 'Eagle Strafing Run', 202236804: 'FAF-14 Spear', 1944161163: 'FLAM-40 Flamethrower',
+  70017975: 'FX-12 Shield Generator Relay', 1159284196: 'GL-21 Grenade Launcher',
+  316296057: 'GL-28 Belt-Fed Grenade Launcher', 3560739565: 'GL-52 De-Escalator',
+  1594211884: 'GR-8 Recoilless Rifle', 961518079: 'LAS-98 Laser Cannon', 1597673685: 'LAS-99 Quasar Cannon',
+  3123380863: 'LIFT-182 Warp Pack', 3863540692: 'LIFT-850 Jump Pack', 230501979: 'LIFT-860 Hover Pack',
+  3659583399: 'M-1000 Maxigun', 2074801524: 'M-102 Gunner FRV', 2996892424: 'M-103 Supply FRV',
+  3657826519: 'M-104 Incinerator FRV', 1978117092: 'M-105 Stalwart', 783152568: 'MD-17 Anti-Tank Mines',
+  3039399791: 'MD-6 Anti-Personnel Minefield', 1326547218: 'MD-8 Gas Mines', 3111134131: 'MD-I4 Incendiary Mines',
+  4038802832: 'MG-206 Heavy Machine Gun', 934703916: 'MG-43 Machine Gun', 4001788629: 'MGX-42 Bullet Storm',
+  3212037062: 'MLS-4X Commando', 906184838: 'MS-11 Solo Silo', 2928105092: 'Orbital 120mm HE Barrage',
+  4158531749: 'Orbital 380mm HE Barrage', 2831720448: 'Orbital Airburst Strike', 3551336597: 'Orbital EMS Strike',
+  1134323464: 'Orbital Gas Strike', 1078307866: 'Orbital Gatling Barrage', 1520012896: 'Orbital Laser',
+  691091357: 'Orbital Napalm Barrage', 2391781446: 'Orbital Precision Strike',
+  2197477188: 'Orbital Railcannon Strike', 1363304012: 'Orbital Smoke Strike', 808823003: 'Orbital Walking Barrage',
+  2961443701: 'PLAS-45 Epoch', 3201417018: 'RL-77 Airburst Rocket Launcher', 295440526: 'RS-422 Railgun',
+  2266266587: 'Reinforce', 548295611: 'Resupply', 4030799106: 'S-11 Speargun',
+  2369837022: 'SH-20 Ballistic Shield Backpack', 485637029: 'SH-32 Shield Generator Pack',
+  1382612374: 'SH-51 Directional Shield', 3564779466: 'StA-X3 W.A.S.P. Launcher', 2237630340: 'TD-110 Maelstrom',
+  2437239365: 'TD-220 Bastion MK XVI', 1725541340: 'TX-41 Sterilizer',
+};
+
+// Difficulty level (task value type 9) → the game's name for it.
+const DIFFICULTY_NAME_BY_LEVEL = {
+  1: 'Trivial', 2: 'Easy', 3: 'Medium', 4: 'Challenging', 5: 'Hard', 6: 'Extreme', 7: 'Suicide Mission',
+  8: 'Impossible', 9: 'Helldive', 10: 'Super Helldive',
+};
 
 const DSS_ACTION_STATUS_NAME = { 1: 'CHARGING', 2: 'ACTIVE', 3: 'COOLDOWN' };
 
@@ -333,6 +482,57 @@ function getTaskValue(task, valueTypeId) {
   const position = (task.valueTypes || []).indexOf(valueTypeId);
   if (position === -1) return null;
   return (task.values || [])[position];
+}
+
+// The owner's Major Order corrections from major-order-fixes.js, checked:
+// entries of the wrong shape are left out. readable is false when the file is
+// missing or has a mistake in it; then the page words every task by itself.
+function getMajorOrderFixes() {
+  const fixes = typeof MAJOR_ORDER_FIXES !== 'undefined' && isPlainObject(MAJOR_ORDER_FIXES) ? MAJOR_ORDER_FIXES : null;
+  const namesFrom = table => Object.fromEntries(Object.entries(isPlainObject(table) ? table : {})
+    .filter(([id, name]) => /^\d+$/.test(id) && typeof name === 'string' && name.trim() !== '')
+    .map(([id, name]) => [id, name.trim()]));
+  return {
+    readable: fixes !== null,
+    taskText: asArray(fixes?.taskText).filter(fix => isPlainObject(fix)
+      && typeof fix.pageSays === 'string' && fix.pageSays.trim() !== ''
+      && typeof fix.showInstead === 'string' && fix.showInstead.trim() !== ''),
+    enemyNames: namesFrom(fixes?.enemyNames),
+    stratagemNames: namesFrom(fixes?.stratagemNames),
+  };
+}
+
+// Who a kill task is about: a named enemy ("Hive Guards"), else the faction
+// ("Automatons"). An enemy id the page doesn't know is shown by its number,
+// so the owner can name it in major-order-fixes.js.
+function describeTaskEnemy(task, targetAmount, factionName, fixes) {
+  const unitId = getTaskValue(task, TASK_VALUE_TYPE.UNIT_ID);
+  const factionKey = normalizeFactionName(factionName);
+  if (isFiniteNumber(unitId) && unitId !== 0) {
+    if (fixes.enemyNames[unitId]) return fixes.enemyNames[unitId];
+    const names = ENEMY_NAMES_BY_UNIT_ID[unitId];
+    if (names) return targetAmount === 1 ? names[0] : names[1];
+    return `of an enemy the page doesn't know yet (#${unitId}${factionKey ? `, ${getFactionDisplayName(factionKey)}` : ''})`;
+  }
+  return factionKey ? getFactionDisplayName(factionKey) : 'enemies';
+}
+
+// The conditions a task adds: " using the TD-110 Maelstrom", " in multiplayer",
+// " on Suicide Mission or higher". Unknown stratagems are shown by number.
+function describeTaskConditions(task, fixes) {
+  const itemId = getTaskValue(task, TASK_VALUE_TYPE.ITEM_ID);
+  const minPlayers = getTaskValue(task, TASK_VALUE_TYPE.MIN_PLAYERS);
+  const difficulty = getTaskValue(task, TASK_VALUE_TYPE.DIFFICULTY);
+  let text = '';
+  if (isFiniteNumber(itemId) && itemId !== 0) {
+    const stratagem = fixes.stratagemNames[itemId] || STRATAGEM_NAME_BY_ITEM_ID[itemId];
+    text += stratagem ? ` using the ${stratagem}` : ` using stratagem #${itemId}`;
+  }
+  if (isFiniteNumber(minPlayers) && minPlayers > 1) text += ' in multiplayer';
+  if (isFiniteNumber(difficulty) && difficulty > 0) {
+    text += ` on ${DIFFICULTY_NAME_BY_LEVEL[difficulty] || `difficulty ${difficulty}`} or higher`;
+  }
+  return text;
 }
 
 // Where a task has to be done: a planet index, a sector index, or neither when
@@ -2734,8 +2934,21 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
   return { planetIndexes, factionKeys };
 }
 
-// Turns one assignment task into a sentence and a progress figure.
+// Turns one assignment task into a sentence and a progress figure. The owner's
+// wording fixes (major-order-fixes.js) replace a sentence the page got wrong.
 function describeAssignmentTask(task, progressValue) {
+  const fixes = getMajorOrderFixes();
+  const description = describeAssignmentTaskAutomatically(task, progressValue, fixes);
+  const fix = fixes.taskText.find(entry => entry.pageSays.trim() === description.sentence);
+  if (fix) {
+    description.automaticSentence = description.sentence;
+    description.sentence = fix.showInstead.trim();
+  }
+  return description;
+}
+
+// The page's own wording of one task, from the game's numbers.
+function describeAssignmentTaskAutomatically(task, progressValue, fixes) {
   const targetAmount = getTaskValue(task, TASK_VALUE_TYPE.TARGET_AMOUNT);
   const { planetIndex, sectorIndex } = getTaskLocation(task);
   const factionId    = getTaskValue(task, TASK_VALUE_TYPE.FACTION_ID);
@@ -2773,15 +2986,19 @@ function describeAssignmentTask(task, progressValue) {
     return description;
   }
 
+  const factionKey = normalizeFactionName(factionName);
+  const conditions = describeTaskConditions(task, fixes);
   if (task.type === TASK_TYPE.ERADICATE) {
-    description.sentence = `Kill ${formatBigNumber(targetAmount)} ${factionName || 'enemies'}${placeText}`;
+    description.sentence = `Kill ${formatBigNumber(targetAmount)} ${describeTaskEnemy(task, targetAmount, factionName, fixes)}`
+      + conditions + placeText;
   } else if (task.type === TASK_TYPE.COMPLETE_OPERATIONS) {
     description.sentence = `Complete ${formatBigNumber(targetAmount)} operations`
-      + (factionName ? ` against the ${factionName}` : '') + placeText;
+      + (factionKey ? ` against the ${getFactionDisplayName(factionKey)}` : '') + conditions + placeText;
   } else {
     // Unknown task type: say what we know without guessing what it means.
-    const details = [planetName, isFiniteNumber(sectorIndex) ? `sector #${sectorIndex}` : null, factionName].filter(Boolean).join(', ');
-    description.sentence = `Objective (type ${task.type ?? '?'})` + (details ? `: ${details}` : '');
+    const details = [planetName, isFiniteNumber(sectorIndex) ? `sector #${sectorIndex}` : null,
+      factionKey ? getFactionDisplayName(factionKey) : null].filter(Boolean).join(', ');
+    description.sentence = `Objective (type ${task.type ?? '?'})` + (details ? `: ${details}` : '') + conditions;
   }
 
   if (isFiniteNumber(targetAmount) && targetAmount > 0) {
@@ -3735,12 +3952,14 @@ function renderAssignmentsInFull() {
     replaceContent('output-assignments', [buildElement('p', { className: 'empty-state', text: 'No orders active.' })]);
     return;
   }
-  replaceContent('output-assignments', apiData.assignments.map(assignment => {
+  replaceContent('output-assignments', [buildMajorOrderFixesNote(), ...apiData.assignments.map(assignment => {
     const rows = assignment.tasks.map((task, taskPosition) => {
       const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
       const rawValues = asArray(task.valueTypes)
         .map((valueType, valuePosition) => `${valueType}=${asArray(task.values)[valuePosition]}`).join(' ');
-      return [String(taskPosition + 1), described.sentence, String(task.type ?? '—'), rawValues || '—',
+      const sentence = described.automaticSentence
+        ? `${described.sentence} (fixed by hand; the page said "${described.automaticSentence}")` : described.sentence;
+      return [String(taskPosition + 1), sentence, String(task.type ?? '—'), rawValues || '—',
               described.progressText, formatPercent(described.progressPercent)];
     });
     return buildElement('article', { className: 'order-detail' }, [
@@ -3754,7 +3973,21 @@ function renderAssignmentsInFull() {
       rows.length ? buildTable(`Tasks for ${assignment.title || 'this order'}`,
         ['#', 'Task', 'Type', 'Raw values', 'Progress', 'Done'], rows) : null,
     ]);
-  }));
+  })]);
+}
+
+// Where to correct a task the page words wrong, and a warning when the fixes
+// file couldn't be read (a mistake in it), so the owner notices.
+function buildMajorOrderFixesNote() {
+  const fixes = getMajorOrderFixes();
+  if (!fixes.readable) {
+    return buildStatusLine({ status: 'warning', icon: '⚠',
+      text: 'major-order-fixes.js couldn\'t be read (a missing comma or quote?), so the page words every task by itself.' });
+  }
+  const fixCount = fixes.taskText.length + Object.keys(fixes.enemyNames).length + Object.keys(fixes.stratagemNames).length;
+  return buildElement('p', { className: 'section-hint',
+    text: `A task worded wrong, or an enemy shown by number? Fix it in major-order-fixes.js in the public DropIntel repository; that file says how.`
+      + (fixCount ? ` ${fixCount} fix${fixCount === 1 ? ' is' : 'es are'} in use.` : '') });
 }
 
 // Every campaign as a full card, filtered and sorted by the section controls → #output-campaigns
@@ -5328,9 +5561,9 @@ function renderGambits() {
 
 const LLM_API_KEY_STORAGE_KEY = 'hd2_llm_api_key';   // the user's own key; never in the code or the repo
 const LLM_MODEL_STORAGE_KEY = 'hd2_llm_model';
-const LLM_TIMEOUT_MILLISECONDS = 45000;               // model replies are slower than war feeds
+const LLM_TIMEOUT_MILLISECONDS = 60000;               // per call; model replies are slower than war feeds
 const LLM_PROMPT_CANDIDATE_LIMIT = 6;
-const LLM_REPLY_CHARACTER_LIMIT = 2000;
+const LLM_REPLY_CHARACTER_LIMIT = 4000;
 
 // The only code that knows which LLM is used. To swap providers, write another
 // object with the same members and point LLM_PROVIDER at it.
@@ -5344,44 +5577,61 @@ const GEMINI_PROVIDER = {
   keyHelpUrl: 'https://aistudio.google.com/apikey',
   modelListUrl: 'https://ai.google.dev/gemini-api/docs/models',
 
-  // Room for the model's thinking plus a short answer: thinking counts against it.
-  maxOutputTokens: 8192,
+  // The model's generation from its name ("gemini-3.8-flash" → 3.8), or NaN.
+  generationOf(model) {
+    return Number((/^gemini-(\d+(?:\.\d+)?)/.exec(model) || [])[1]);
+  },
+
+  // Room for the model's thinking plus its answer (thinking counts against it).
+  // Gemini 2.5 and later can write up to 65,536 tokens, so they get plenty;
+  // older models top out at 8,192. Only what is written is counted, not the room.
+  maxOutputTokensFor(model) {
+    return this.generationOf(model) >= 2.5 ? 32768 : 8192;
+  },
 
   // How hard the model may think before it answers. Gemini 3 models think at
-  // "high" by default, and that thinking can use up the whole maxOutputTokens,
-  // leaving no answer at all (it failed that way on some fronts and not others).
-  // A short overview needs little thinking. Gemini 3 and later take a level,
-  // 2.5 takes a token budget, older models don't think.
-  thinkingConfigFor(model) {
-    const generation = Number((/^gemini-(\d+(?:\.\d+)?)/.exec(model) || [])[1]);
-    if (generation >= 3) return { thinkingLevel: 'low' };
-    if (generation >= 2.5) return { thinkingBudget: 1024 };
+  // "high" by default, and that thinking can use up the whole answer length,
+  // leaving no answer at all. A short overview needs little: 'low' first, and
+  // 'least' when a 'low' answer still came back empty. Gemini 3 and later take
+  // a level, 2.5 takes a token budget, older models don't think.
+  thinkingConfigFor(model, effort = 'low') {
+    const generation = this.generationOf(model);
+    if (generation >= 3) return { thinkingLevel: effort === 'least' ? 'minimal' : 'low' };
+    if (generation >= 2.5) return { thinkingBudget: effort === 'least' ? 512 : 1024 };
     return null;
   },
 
   // URL and fetch options for one prompt. The key goes in a header, not the
-  // URL, so it can't end up in logs or the browser history.
-  buildRequest(apiKey, model, systemText, userText, { withThinkingConfig = true } = {}) {
-    const thinkingConfig = withThinkingConfig ? this.thinkingConfigFor(model) : null;
+  // URL, so it can't end up in logs or the browser history. plain leaves out
+  // the thinking setting and asks for the length every model accepts.
+  buildRequest(apiKey, model, systemText, userText, { thinkingEffort = 'low', plain = false } = {}) {
+    const thinkingConfig = plain ? null : this.thinkingConfigFor(model, thinkingEffort);
+    const maxOutputTokens = plain ? 8192 : this.maxOutputTokensFor(model);
     return {
       url: `${this.origin}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      sentThinkingConfig: Boolean(thinkingConfig),
       options: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemText }] },
           contents: [{ role: 'user', parts: [{ text: userText }] }],
-          generationConfig: { maxOutputTokens: this.maxOutputTokens, ...(thinkingConfig ? { thinkingConfig } : {}) },
+          generationConfig: { maxOutputTokens, ...(thinkingConfig ? { thinkingConfig } : {}) },
         }),
       },
     };
   },
 
-  // True when a failed call was about the thinking setting, so it is worth one
-  // more try without it (a model that doesn't take that kind of setting).
-  rejectedThinkingConfig(status, body) {
-    return status === 400 && /thinking/i.test(String(body?.error?.message || ''));
+  // True when a failed call was about the thinking or length setting, so it is
+  // worth one more try with plain settings (a model that doesn't take them).
+  rejectedGenerationSettings(status, body) {
+    return status === 400 && /thinking|output.?tokens/i.test(String(body?.error?.message || ''));
+  },
+
+  // True for an answer that came back empty because thinking used up its length.
+  ranOutWhileThinking(body) {
+    const candidate = asArray(body?.candidates)[0];
+    const hasText = asArray(candidate?.content?.parts).some(part => typeof part?.text === 'string' && part.text.trim() && !part.thought);
+    return candidate?.finishReason === 'MAX_TOKENS' && !hasText;
   },
 
   // The reply's text from a successful response body; throws with the reason otherwise.
@@ -5393,7 +5643,7 @@ const GEMINI_PROVIDER = {
       .filter(part => typeof part?.text === 'string' && !part.thought)
       .map(part => part.text).join('').trim();
     if (!text && candidate?.finishReason === 'MAX_TOKENS') {
-      throw new Error('Gemini used up its answer length thinking and wrote nothing (finish reason: MAX_TOKENS). Ask again; if it keeps happening, try another model.');
+      throw new Error('Gemini used up its answer length thinking and wrote nothing (finish reason: MAX_TOKENS), even when asked to think less. Ask again, or try another model.');
     }
     if (!text) throw new Error(`Gemini sent no text (finish reason: ${candidate?.finishReason || 'unknown'}).`);
     return text;
@@ -5524,11 +5774,33 @@ function describeMajorOrderFocus(factionKey, assignments = apiData.assignments) 
       + `Focus there to help it most. The normal overview of the ${getFactionDisplayName(factionKey)} front is below.` };
 }
 
-// Sends one prompt to the provider and returns the reply text. The request
-// goes to LLM_PROVIDER.origin only, and times out rather than hang. If the model
-// refuses the thinking setting, it asks once more without it.
-async function askLlm(apiKey, model, prompt, { withThinkingConfig = true } = {}) {
-  const request = LLM_PROVIDER.buildRequest(apiKey, model, prompt.systemText, prompt.userText, { withThinkingConfig });
+// Sends one prompt to the provider and returns the reply text. If the model
+// refuses the thinking or length setting, it asks once more with plain ones; if
+// an answer comes back empty because thinking used up its length, it asks once
+// more with the least thinking. At most three calls.
+async function askLlm(apiKey, model, prompt) {
+  let settings = { thinkingEffort: 'low', plain: false };
+  for (;;) {
+    const { response, body } = await sendLlmRequest(apiKey, model, prompt, settings);
+    if (!response.ok) {
+      if (!settings.plain && LLM_PROVIDER.rejectedGenerationSettings(response.status, body)) {
+        settings = { plain: true };
+        continue;
+      }
+      throw new Error(LLM_PROVIDER.describeFailure(response.status, body, model));
+    }
+    if (!settings.plain && settings.thinkingEffort === 'low' && LLM_PROVIDER.ranOutWhileThinking(body)) {
+      settings = { thinkingEffort: 'least', plain: false };
+      continue;
+    }
+    return LLM_PROVIDER.readReply(body);
+  }
+}
+
+// One call to the provider: its response and parsed body. The request goes to
+// LLM_PROVIDER.origin only, and times out rather than hang.
+async function sendLlmRequest(apiKey, model, prompt, settings) {
+  const request = LLM_PROVIDER.buildRequest(apiKey, model, prompt.systemText, prompt.userText, settings);
   if (!request.url.startsWith(`${LLM_PROVIDER.origin}/`)) throw new Error('Refused to send the key anywhere but the provider.');
 
   const abortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -5544,11 +5816,7 @@ async function askLlm(apiKey, model, prompt, { withThinkingConfig = true } = {})
   }
   // error bodies are usually JSON too, but a proxy's may not be
   const body = await response.json().catch(() => null);
-  if (!response.ok && request.sentThinkingConfig && LLM_PROVIDER.rejectedThinkingConfig(response.status, body)) {
-    return askLlm(apiKey, model, prompt, { withThinkingConfig: false });
-  }
-  if (!response.ok) throw new Error(LLM_PROVIDER.describeFailure(response.status, body, model));
-  return LLM_PROVIDER.readReply(body);
+  return { response, body };
 }
 
 // Asks the LLM about one front and keeps the outcome for the panel to show.

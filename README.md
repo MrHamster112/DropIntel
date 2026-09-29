@@ -31,3 +31,10 @@ Unofficial fan project, not affiliated with or endorsed by Arrowhead Game Studio
 Interactive Entertainment. HELLDIVERS™ 2 is their trademark. The planet landscapes are drawn by
 the page itself. Faction logos © Arrowhead Game Studios, as traced by Helldivers Wiki contributors.
 War data from the community APIs at api.helldivers2.dev and helldiverstrainingmanual.com.
+Enemy and stratagem names in Major Order tasks come from the data of the Galactic Wide Web
+Discord bot (github.com/Stonemercy/Galactic-Wide-Web).
+
+## Fixing a Major Order
+
+If the page words a Major Order task wrong, or shows an enemy by number, edit
+`major-order-fixes.js` in this repository (the pencil button on GitHub). The file explains how.
