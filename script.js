@@ -5734,6 +5734,7 @@ const LLM_MODEL_STORAGE_KEY = 'hd2_llm_model';
 const LLM_TIMEOUT_MILLISECONDS = 60000;               // per call; model replies are slower than war feeds
 const LLM_PROMPT_CANDIDATE_LIMIT = 6;
 const LLM_REPLY_CHARACTER_LIMIT = 4000;
+const LLM_OVERLOAD_RETRY_MILLISECONDS = 4000;           // one more try after "overloaded" (a 5xx)
 
 // The only code that knows which LLM is used. To swap providers, write another
 // object with the same members and point LLM_PROVIDER at it.
@@ -5819,14 +5820,52 @@ const GEMINI_PROVIDER = {
     return text;
   },
 
+  // True for a failure worth one more try after a short wait: Google's servers were overloaded
+  // or had an error (5xx). A quota (429) is not retried: that would only use up more of it.
+  isWorthRetrying(status) {
+    return status >= 500;
+  },
+
+  // How many seconds Google asks to wait before trying again (its RetryInfo, or the "Please
+  // retry in 32.8s." in its message), rounded up; null when it doesn't say.
+  readRetryDelaySeconds(body) {
+    const retryInfo = asArray(body?.error?.details).find(detail => /RetryInfo$/.test(String(detail?.['@type'] || '')));
+    const fromDetails = parseFloat(String(retryInfo?.retryDelay || ''));
+    const fromMessage = parseFloat((String(body?.error?.message || '').match(/retry in ([\d.]+)\s*s/i) || [])[1]);
+    const seconds = isFiniteNumber(fromDetails) ? fromDetails : fromMessage;
+    return isFiniteNumber(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
+  },
+
+  // Which free-tier limit a 429 hit, from Google's QuotaFailure details: 'day', 'minute' or null.
+  readQuotaPeriod(body) {
+    const quotaIds = asArray(body?.error?.details)
+      .filter(detail => /QuotaFailure$/.test(String(detail?.['@type'] || '')))
+      .flatMap(detail => asArray(detail.violations).map(violation => String(violation?.quotaId || '')));
+    if (quotaIds.some(quotaId => /PerDay/i.test(quotaId))) return 'day';
+    if (quotaIds.some(quotaId => /PerMinute/i.test(quotaId))) return 'minute';
+    return null;
+  },
+
   // A plain-language reason for a failed call, from its status and error body.
   describeFailure(status, body, model) {
     const reason = asArray(body?.error?.details).map(detail => detail?.reason).find(Boolean);
     if (reason === 'API_KEY_INVALID') return 'Google says this API key is not valid.';
     if (status === 403) return 'Google refused this key (HTTP 403). Check that it is a Gemini API key from Google AI Studio.';
     if (status === 404) return `Google has no model called "${model}". Pick a current one from ${this.modelListUrl}.`;
-    if (status === 429) return 'Google\'s rate limit or free-tier quota for this key was reached. Try again later.';
-    if (status >= 500) return `Google's service had a problem (HTTP ${status}). Try again later.`;
+    if (status === 429) {
+      const period = this.readQuotaPeriod(body);
+      const seconds = this.readRetryDelaySeconds(body);
+      if (period === 'day') {
+        return `Today's free-tier quota for this key and "${model}" is used up. It resets at midnight Pacific time; until then, you can try another model in Settings.`;
+      }
+      const wait = seconds !== null ? `Try again in ${seconds} s.` : 'Try again in a minute.';
+      if (period === 'minute') return `Too many requests this minute for Google's free tier. ${wait} Ask about one front at a time.`;
+      return `Google's rate limit or free-tier quota for this key was reached. ${seconds !== null ? wait : 'Try again later.'}`;
+    }
+    if (status === 503) {
+      return `Google's servers for "${model}" are overloaded right now (HTTP 503), even after one more try. Try again in a few minutes, or pick another model in Settings.`;
+    }
+    if (status >= 500) return `Google's service had a problem (HTTP ${status}), even after one more try. Try again later.`;
     const message = typeof body?.error?.message === 'string' ? body.error.message.slice(0, 200) : '';
     return `The request failed (HTTP ${status})${message ? `: ${message}` : '.'}`;
   },
@@ -5947,12 +5986,20 @@ function describeMajorOrderFocus(factionKey, assignments = apiData.assignments) 
 // Sends one prompt to the provider and returns the reply text. If the model
 // refuses the thinking or length setting, it asks once more with plain ones; if
 // an answer comes back empty because thinking used up its length, it asks once
-// more with the least thinking. At most three calls.
+// more with the least thinking; if Google's servers are overloaded (a 5xx), it
+// waits a few seconds and asks once more. At most four calls; a quota (429) is
+// never retried.
 async function askLlm(apiKey, model, prompt) {
   let settings = { thinkingEffort: 'low', plain: false };
+  let retriedAfterServerError = false;
   for (;;) {
     const { response, body } = await sendLlmRequest(apiKey, model, prompt, settings);
     if (!response.ok) {
+      if (!retriedAfterServerError && LLM_PROVIDER.isWorthRetrying(response.status)) {
+        retriedAfterServerError = true;
+        await waitMilliseconds(LLM_OVERLOAD_RETRY_MILLISECONDS);
+        continue;
+      }
       if (!settings.plain && LLM_PROVIDER.rejectedGenerationSettings(response.status, body)) {
         settings = { plain: true };
         continue;
