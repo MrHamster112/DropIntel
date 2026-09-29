@@ -74,6 +74,18 @@
         </select>
       </label>
       <p class="section-hint">"My front" puts that front's planets first in Where to drop. Settings stay in this browser only.</p>
+      <fieldset class="alert-settings">
+        <legend>Alerts</legend>
+        <label class="alert-master"><input type="checkbox" id="alerts-enabled"> Alert me while this page is open (off by default)</label>
+        <div class="alert-types" role="group" aria-label="What to alert about">
+          <label><input type="checkbox" data-alert-type="newOrder"> A new Major Order</label>
+          <label><input type="checkbox" data-alert-type="newDispatch"> A new dispatch</label>
+          <label><input type="checkbox" data-alert-type="watchedProgress"> A watched planet reaches 25, 50 or 75%</label>
+          <label><input type="checkbox" data-alert-type="watchedDefense"> A watched planet's defense is failing</label>
+          <label><input type="checkbox" data-alert-type="ownerChange"> Any planet is liberated or lost</label>
+        </div>
+        <p id="alerts-status" class="section-hint" aria-live="polite"></p>
+      </fieldset>
       <p class="settings-links"><a href="#section=raw-data">Raw data (advanced mode)</a></p>
       <details class="llm-settings" id="llm-settings">
         <summary>Optional: AI overview for bonus info, with your own Google Gemini key</summary>
@@ -135,6 +147,14 @@
       <div id="simple-defenses" class="card-grid"></div>
     </section>
 
+    <section class="panel" aria-labelledby="events-heading">
+      <h2 id="events-heading">Recent events</h2>
+      <p class="section-hint">From the site's war record, taken every 15 minutes. A planet's name opens its details.</p>
+      <div id="simple-alerts"></div>
+      <div id="simple-events"></div>
+      <div id="simple-watchlist"></div>
+    </section>
+
     <section class="panel" aria-labelledby="drop-heading">
       <h2 id="drop-heading">Where to drop</h2>
       <p class="section-hint">Ranked by the Major Order, how the fight is going, and where other Helldivers are.</p>
@@ -162,6 +182,7 @@
         <a href="#planet-effects-heading" data-section="advanced-section-planet-effects">Effects</a>
         <a href="#space-station-heading" data-section="advanced-section-space-station">DSS</a>
         <a href="#dispatches-heading" data-section="advanced-section-dispatches">Dispatches</a>
+        <a href="#events-list-heading" data-section="advanced-section-events">Events</a>
         <a href="#raw-data-heading" data-section="advanced-section-raw-data">Raw data</a>
       </nav>
       <div class="toolbar-row">
@@ -292,6 +313,16 @@
       </h2>
       <div id="advanced-section-dispatches-body" class="collapsible-body">
         <div id="output-dispatches"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-section" id="advanced-section-events" aria-labelledby="events-list-heading">
+      <h2 id="events-list-heading" class="collapsible-heading">
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-events-body">Events</button>
+      </h2>
+      <div id="advanced-section-events-body" class="collapsible-body">
+        <p class="section-hint">Everything the site's war record noticed in the last two weeks (at most 200), newest first: planets liberated or lost, attacks, defenses won or failed, new Major Orders, the DSS moving and new wars.</p>
+        <div id="output-events"></div>
       </div>
     </section>
 

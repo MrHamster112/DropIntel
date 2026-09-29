@@ -1024,7 +1024,10 @@ function convertSharedHistory(rawHistory) {
     planetsByIndex,
     frontSamples,
     majorOrderSamples,
-    events: asArray(rawHistory.events).filter(event => isPlainObject(event) && isFiniteNumber(event.time)),
+    events: asArray(rawHistory.events)
+      .filter(event => isPlainObject(event) && isFiniteNumber(event.time) && typeof event.text === 'string')
+      .map(event => ({ timestamp: event.time * 1000, type: String(event.type || ''),
+        planetIndex: Number.isInteger(event.planet) ? event.planet : null, text: event.text })),
   };
 }
 
@@ -3520,11 +3523,11 @@ function putTextInElement(elementId, text) {
 // one section can't blank the rest of the page.
 function renderEverything() {
   const renderers = [
-    renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleDropTargets,
+    renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist, renderSimpleDropTargets,
     renderSimpleLatestDispatch,
     renderWarMap, renderGambits, renderWarStatistics, renderTrendGraphs, renderAssignmentsInFull, renderCampaigns, renderDefenseEvents,
-    renderPlanets, renderPlanetEffects, renderSpaceStation, renderNewsDispatches, renderRawData,
-    renderPlanetJumpOptions, renderPlanetDrawer, openPlanetFromLinkWhenKnown,
+    renderPlanets, renderPlanetEffects, renderSpaceStation, renderNewsDispatches, renderAllEvents, renderRawData,
+    renderPlanetJumpOptions, renderPlanetDrawer, openPlanetFromLinkWhenKnown, checkForAlerts,
     renderStatusBar,
   ];
   for (const renderer of renderers) {
@@ -6320,7 +6323,7 @@ function buildPlanetDrawerBody(details) {
   const planet = details.planet;
   const sections = [
     buildElement('p', { className: 'planet-drawer-subline', text: [details.ownerText, planet.sector ? `${planet.sector} sector` : null,
-      details.isMajorOrderTarget ? 'Major Order target' : null].filter(Boolean).join(' · ') }),
+      details.isMajorOrderTarget ? 'Major Order target' : null, isWatched(planet.index) ? 'Watching' : null].filter(Boolean).join(' · ') }),
   ];
   if (details.progressPercent !== null) {
     sections.push(buildMeter(details.progressPercent, details.progressLabel, details.verdictLine.status));
@@ -6372,7 +6375,11 @@ function buildPlanetDrawerBody(details) {
   }
 
   const guideEntry = details.guideEntryId ? findGuideEntry(getGuideData(), details.guideEntryId) : null;
+  const watched = isWatched(planet.index);
   sections.push(buildElement('div', { className: 'planet-drawer-actions' }, [
+    buildElement('button', { text: watched ? '✔ Watching' : 'Watch', attributes: { type: 'button', 'data-drawer-action': 'watch',
+      'aria-pressed': String(watched), 'data-drawer-focus-key': 'watch',
+      'aria-label': watched ? `Stop watching ${planet.name}` : `Watch ${planet.name}` } }),
     buildElement('button', { text: 'Full details', attributes: { type: 'button', 'data-drawer-action': 'details', 'data-drawer-focus-key': 'details' } }),
     guideEntry ? buildElement('button', { text: `Guide: ${guideEntry.name || guideEntry.title}`,
       attributes: { type: 'button', 'data-drawer-action': 'guide', 'data-guide-entry': details.guideEntryId, 'data-drawer-focus-key': 'guide' } }) : null,
@@ -6463,6 +6470,10 @@ function handleDrawerClicks(event) {
   const action = target.closest('[data-drawer-action]');
   if (!action) return;
   const planetIndex = planetDrawerState.planetIndex;
+  if (action.dataset.drawerAction === 'watch') {
+    toggleWatch(planetIndex);
+    return;
+  }
   closePlanetDrawer({ returnFocus: false });
   if (action.dataset.drawerAction === 'details') jumpToPlanet(planetIndex);
   if (action.dataset.drawerAction === 'guide') showGuideEntry(action.dataset.guideEntry);
@@ -7054,6 +7065,342 @@ function wireSettingsAndLinks() {
   applyLocationHash();
 }
 
+// ── EVENTS, WATCHLIST AND ALERTS ─────────────────────────────────────────────
+// Recent events come from the shared war record (the collector notices them every 15 minutes).
+// The watchlist and the alert settings stay in this browser. Alerts are off by default and
+// only work while the page is open: each one is remembered (hd2_alerts_seen), so nothing is
+// ever announced twice, and turning alerts on (or watching a planet) first marks everything
+// already true as seen. While the tab is in the background, its title counts new alerts.
+
+const WATCHLIST_STORAGE_KEY = 'hd2_watchlist';
+const WATCHLIST_LIMIT = 20;
+const ALERT_SETTINGS_STORAGE_KEY = 'hd2_alerts';
+const ALERTS_SEEN_STORAGE_KEY = 'hd2_alerts_seen';
+const ALERTS_SEEN_LIMIT = 400;
+const ALERT_TYPES = ['newOrder', 'newDispatch', 'watchedProgress', 'watchedDefense', 'ownerChange'];
+const ALERT_PROGRESS_STEPS = [25, 50, 75];
+const SIMPLE_EVENT_COUNT = 5;
+const RECENT_ALERT_COUNT = 5;
+
+// Icon and status for each event type; the words are in the event's own sentence.
+const EVENT_LOOK = {
+  liberated:     { status: 'good',     icon: '✔' },
+  lost:          { status: 'critical', icon: '✖' },
+  attack:        { status: 'warning',  icon: '⚠' },
+  defenseWon:    { status: 'good',     icon: '✔' },
+  defenseFailed: { status: 'critical', icon: '✖' },
+  newOrder:      { status: 'neutral',  icon: '★' },
+  dssMoved:      { status: 'neutral',  icon: '➜' },
+  newWar:        { status: 'neutral',  icon: '●' },
+};
+
+// The watched planet indexes, from storage (anything unreadable is dropped).
+function readWatchlist() {
+  try {
+    const parsed = JSON.parse(readStoredValue(WATCHLIST_STORAGE_KEY) || '[]');
+    return asArray(parsed).filter(Number.isInteger).slice(0, WATCHLIST_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+let watchedPlanetIndexes = readWatchlist();
+
+// True when a planet is on the watchlist.
+function isWatched(planetIndex) {
+  return watchedPlanetIndexes.includes(planetIndex);
+}
+
+// Watches or stops watching a planet. Watching marks what is already true about it as seen,
+// so the first alert is for something that happens from now on.
+function toggleWatch(planetIndex) {
+  if (isWatched(planetIndex)) {
+    watchedPlanetIndexes = watchedPlanetIndexes.filter(index => index !== planetIndex);
+  } else {
+    watchedPlanetIndexes = [...watchedPlanetIndexes, planetIndex].slice(-WATCHLIST_LIMIT);
+    markAlertsSeen(collectAlertCandidates().filter(candidate => candidate.planetIndex === planetIndex));
+  }
+  writeStoredValue(WATCHLIST_STORAGE_KEY, JSON.stringify(watchedPlanetIndexes));
+  renderPlanetDrawer();
+  renderSimpleWatchlist();
+}
+
+// The shared record's events, newest first.
+function getRecentEvents() {
+  return asArray(apiData.sharedHistory?.events)
+    .slice()
+    .sort((first, second) => second.timestamp - first.timestamp);
+}
+
+// One event as a list item: its icon, when, and its sentence with the planet as a button.
+function buildEventItem(event, { withDate = false } = {}) {
+  const look = EVENT_LOOK[event.type] || { status: 'neutral', icon: '•' };
+  const planet = event.planetIndex !== null ? apiData.planetsByIndex[event.planetIndex] : null;
+  return buildElement('li', { className: `event-item status-${look.status}` }, [
+    buildElement('span', { className: 'status-icon', text: look.icon, attributes: { 'aria-hidden': 'true' } }),
+    buildElement('span', { className: 'event-time', text: withDate
+      ? `${formatDateTime(event.timestamp)} (${formatTimeAgo(event.timestamp)})` : formatTimeAgo(event.timestamp) }),
+    buildElement('span', { className: 'event-text' }, buildTaskSentenceWithPlanet(event.text, planet)),
+  ]);
+}
+
+// What an events list says when it has nothing to show.
+function describeMissingEvents() {
+  if (apiData.sharedHistoryStatus === 'loading') return 'Loading the war record…';
+  if (apiData.sharedHistoryStatus !== 'loaded') return 'Events come from the site\'s war record, which couldn\'t be loaded (offline, or a downloaded copy without internet).';
+  return 'No events recorded in the last two weeks yet.';
+}
+
+// The last few events → #simple-events
+function renderSimpleEvents() {
+  const events = getRecentEvents().slice(0, SIMPLE_EVENT_COUNT);
+  replaceContent('simple-events', [events.length > 0
+    ? buildElement('ol', { className: 'event-list' }, events.map(event => buildEventItem(event)))
+    : buildElement('p', { className: 'empty-state', text: describeMissingEvents() })]);
+}
+
+// Every recorded event, with dates → #output-events
+function renderAllEvents() {
+  const events = getRecentEvents();
+  replaceContent('output-events', [events.length > 0
+    ? buildElement('ol', { className: 'event-list' }, events.map(event => buildEventItem(event, { withDate: true })))
+    : buildElement('p', { className: 'empty-state', text: describeMissingEvents() })]);
+}
+
+// The watched planets as buttons that open their details → #simple-watchlist
+function renderSimpleWatchlist() {
+  const planets = watchedPlanetIndexes.map(index => apiData.planetsByIndex[index]).filter(Boolean);
+  replaceContent('simple-watchlist', planets.length === 0 ? [] : [
+    buildElement('p', { className: 'watchlist' }, [
+      'Watching: ',
+      ...planets.flatMap((planet, position) => [position > 0 ? ', ' : null, buildPlanetDrawerButton(planet)]).filter(Boolean),
+    ]),
+  ]);
+}
+
+// The alert settings: { enabled, types: {type: bool} }. Off unless the visitor turned them on.
+function readAlertSettings() {
+  const settings = { enabled: false, types: Object.fromEntries(ALERT_TYPES.map(type => [type, true])) };
+  try {
+    const stored = JSON.parse(readStoredValue(ALERT_SETTINGS_STORAGE_KEY) || 'null');
+    if (isPlainObject(stored)) {
+      settings.enabled = stored.enabled === true;
+      for (const type of ALERT_TYPES) if (typeof stored.types?.[type] === 'boolean') settings.types[type] = stored.types[type];
+    }
+  } catch {
+    // unreadable settings mean the defaults: off
+  }
+  return settings;
+}
+
+let alertSettings = readAlertSettings();
+
+// The keys of every alert already announced (or deliberately skipped), newest last.
+function readSeenAlerts() {
+  try {
+    return asArray(JSON.parse(readStoredValue(ALERTS_SEEN_STORAGE_KEY) || '[]')).filter(key => typeof key === 'string');
+  } catch {
+    return [];
+  }
+}
+
+let seenAlertKeys = readSeenAlerts();
+let unreadAlertCount = 0;
+let recentAlerts = [];
+let previousOwnerByPlanetIndex = null;
+
+// Remembers alerts as seen, keeping only the newest ALERTS_SEEN_LIMIT keys.
+function markAlertsSeen(alerts) {
+  const newKeys = alerts.map(alert => alert.key).filter(key => !seenAlertKeys.includes(key));
+  if (newKeys.length === 0) return;
+  seenAlertKeys = [...seenAlertKeys, ...newKeys].slice(-ALERTS_SEEN_LIMIT);
+  writeStoredValue(ALERTS_SEEN_STORAGE_KEY, JSON.stringify(seenAlertKeys));
+}
+
+// A watched planet's progress % and a key for its current fight (a new fight starts over).
+function describeWatchedProgress(planet) {
+  if (planetIsUnderAttack(planet)) {
+    return { percent: getDefenseProgressPercent(planet.event), label: 'defended', fightKey: `defense-${planet.event.id}` };
+  }
+  if (apiData.indexesOfPlanetsWithActiveBattles.has(planet.index) && hasKnownHealth(planet)) {
+    return { percent: getLiberationPercent(planet), label: 'liberated', fightKey: `liberation-${planet.maxHealth}` };
+  }
+  return null;
+}
+
+// Everything that could be announced right now (except owner changes, which need the last
+// render to compare with): [{ key, type, text, planetIndex, step? }]
+function collectAlertCandidates(nowTimestamp = Date.now()) {
+  const candidates = [];
+  for (const assignment of apiData.assignments) {
+    candidates.push({ key: `order:${assignment.id}`, type: 'newOrder', planetIndex: null,
+      text: `New Major Order: ${assignment.title || stripGameMarkup(assignment.briefing).slice(0, 80) || 'Major Order'}` });
+  }
+  for (const dispatch of apiData.newsDispatches) {
+    if (dispatch.id === undefined || dispatch.id === null) continue;
+    const firstLine = stripGameMarkup(dispatch.message).split('\n').find(line => line.trim()) || 'News from High Command';
+    candidates.push({ key: `dispatch:${dispatch.id}`, type: 'newDispatch', planetIndex: null, text: `New dispatch: ${firstLine.trim().slice(0, 100)}` });
+  }
+  for (const planetIndex of watchedPlanetIndexes) {
+    const planet = apiData.planetsByIndex[planetIndex];
+    if (!planet) continue;
+    const progress = describeWatchedProgress(planet);
+    if (progress) {
+      for (const step of ALERT_PROGRESS_STEPS.filter(threshold => progress.percent >= threshold)) {
+        candidates.push({ key: `progress:${planetIndex}:${progress.fightKey}:${step}`, type: 'watchedProgress', planetIndex, step,
+          text: `${planet.name} is ${step}% ${progress.label}` });
+      }
+    }
+    if (planetIsUnderAttack(planet)) {
+      const outlook = describeDefenseOutlook(planet, getPlanetTrend(planet), nowTimestamp);
+      if (outlook.verdict === 'at-risk' || outlook.verdict === 'losing') {
+        candidates.push({ key: `defense:${planet.event.id}:${outlook.verdict}`, type: 'watchedDefense', planetIndex,
+          text: outlook.verdict === 'losing' ? `${planet.name}'s defense is being lost` : `${planet.name}'s defense is at risk` });
+      }
+    }
+  }
+  return candidates;
+}
+
+// Planets whose owner changed since the last render: liberated (now ours) or lost (now an
+// enemy's). The first render with planets only sets the baseline.
+function findOwnerChanges(nowTimestamp = Date.now()) {
+  const ownerByIndex = Object.fromEntries(apiData.planets.map(planet => [planet.index, planet.currentOwner]));
+  const previous = previousOwnerByPlanetIndex;
+  previousOwnerByPlanetIndex = ownerByIndex;
+  if (!previous) return [];
+  const day = new Date(nowTimestamp).toISOString().slice(0, 10);
+  const changes = [];
+  for (const planet of apiData.planets) {
+    const before = previous[planet.index];
+    const after = planet.currentOwner;
+    if (!before || !after || before === after) continue;
+    const nowOurs = normalizeFactionName(after) === null && after !== 'Unknown';
+    const wasOurs = normalizeFactionName(before) === null && before !== 'Unknown';
+    if (nowOurs === wasOurs) continue;
+    changes.push({ key: `owner:${planet.index}:${nowOurs ? 'liberated' : 'lost'}:${day}`, type: 'ownerChange', planetIndex: planet.index,
+      text: nowOurs ? `${planet.name} was liberated` : `${planet.name} was lost to the ${getFactionDisplayName(normalizeFactionName(after))}` });
+  }
+  return changes;
+}
+
+// The page title with the unread count in front while there are unread alerts.
+function updateDocumentTitle() {
+  const baseTitle = document.title.replace(/^\(\d+\) /, '');
+  document.title = unreadAlertCount > 0 ? `(${unreadAlertCount}) ${baseTitle}` : baseTitle;
+}
+
+// Announces one alert: a browser notification when allowed, the in-page list, and the tab
+// title's count while the tab is in the background.
+function deliverAlert(alert, nowTimestamp = Date.now()) {
+  recentAlerts = [{ ...alert, timestamp: nowTimestamp }, ...recentAlerts].slice(0, RECENT_ALERT_COUNT);
+  if (document.hidden) {
+    unreadAlertCount++;
+    updateDocumentTitle();
+  }
+  if (typeof Notification === 'function' && Notification.permission === 'granted') {
+    try {
+      // the tag makes the system replace, not stack, a notification with the same key
+      new Notification('DropIntel', { body: alert.text, tag: alert.key });
+    } catch {
+      // some browsers only allow notifications from a service worker; the title and list still show it
+    }
+  }
+}
+
+// Compares the fresh data with what was seen before and announces anything new (called after
+// every render). Returns the alerts it announced.
+function checkForAlerts(nowTimestamp = Date.now()) {
+  if (apiData.planets.length === 0) return [];
+  const ownerChanges = findOwnerChanges(nowTimestamp);
+  if (!alertSettings.enabled) return [];
+  const candidates = [...collectAlertCandidates(nowTimestamp), ...ownerChanges]
+    .filter(candidate => alertSettings.types[candidate.type] && !seenAlertKeys.includes(candidate.key));
+  // a planet that passed two steps at once gets one alert, for the higher step
+  const announced = candidates.filter(candidate => candidate.type !== 'watchedProgress'
+    || !candidates.some(other => other.type === 'watchedProgress' && other.planetIndex === candidate.planetIndex && other.step > candidate.step));
+  markAlertsSeen(candidates);
+  for (const alert of announced) deliverAlert(alert, nowTimestamp);
+  if (announced.length > 0) renderSimpleAlerts();
+  return announced;
+}
+
+// This visit's alerts, newest first → #simple-alerts (empty until there is one).
+function renderSimpleAlerts() {
+  replaceContent('simple-alerts', recentAlerts.length === 0 ? [] : [
+    buildElement('h3', { className: 'alerts-heading', text: 'Your alerts' }),
+    buildElement('ul', { className: 'event-list alert-list' }, recentAlerts.map(alert => buildElement('li', { className: 'event-item' }, [
+      buildElement('span', { className: 'status-icon', text: '🔔', attributes: { 'aria-hidden': 'true' } }),
+      buildElement('span', { className: 'event-time', text: formatClockTime(alert.timestamp) }),
+      buildElement('span', { className: 'event-text' },
+        buildTaskSentenceWithPlanet(alert.text, alert.planetIndex !== null ? apiData.planetsByIndex[alert.planetIndex] : null)),
+    ]))),
+  ]);
+}
+
+// What the Settings panel says about alerts, including what the browser allows.
+function describeAlertStatus() {
+  if (!alertSettings.enabled) return 'Alerts are off.';
+  if (typeof Notification !== 'function') return 'On. This browser can\'t show notifications here, so alerts are listed under Recent events and counted in the tab\'s title.';
+  if (Notification.permission === 'denied') return 'On, but notifications are blocked for this site. Alerts are listed under Recent events and counted in the tab\'s title.';
+  if (Notification.permission === 'default') return 'On. Allow notifications when the browser asks, or alerts only show on the page and in the tab\'s title.';
+  return 'On. Alerts show as notifications while this page is open, even in a background tab.';
+}
+
+// Saves the alert settings and refreshes what the panel shows.
+function saveAlertSettings() {
+  writeStoredValue(ALERT_SETTINGS_STORAGE_KEY, JSON.stringify(alertSettings));
+  const typeBoxes = document.querySelectorAll('[data-alert-type]');
+  for (const box of typeBoxes) box.disabled = !alertSettings.enabled;
+  putTextInElement('alerts-status', describeAlertStatus());
+}
+
+// Turns alerts on or off. Turning them on marks everything already true as seen (only what
+// happens from now on is announced) and asks for notification permission once.
+async function changeAlertsEnabled(enabled) {
+  alertSettings.enabled = enabled;
+  if (enabled) {
+    if (apiData.planets.length > 0) {
+      markAlertsSeen(collectAlertCandidates());
+      findOwnerChanges();
+    }
+    saveAlertSettings();
+    if (typeof Notification === 'function' && Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        // an old browser without the promise form; the page and title still show alerts
+      }
+    }
+  }
+  saveAlertSettings();
+}
+
+// Wires the Alerts part of the Settings panel and the unread counter (called from startApp).
+function wireAlertSettings() {
+  const enabledBox = document.getElementById('alerts-enabled');
+  if (enabledBox) {
+    enabledBox.checked = alertSettings.enabled;
+    enabledBox.addEventListener('change', () => changeAlertsEnabled(enabledBox.checked));
+  }
+  for (const box of document.querySelectorAll('[data-alert-type]')) {
+    box.checked = alertSettings.types[box.dataset.alertType] !== false;
+    box.addEventListener('change', () => {
+      alertSettings.types[box.dataset.alertType] = box.checked;
+      saveAlertSettings();
+    });
+  }
+  saveAlertSettings();
+  // looking at the page again counts as reading the alerts
+  const markRead = () => {
+    if (document.hidden) return;
+    unreadAlertCount = 0;
+    updateDocumentTitle();
+  };
+  document.addEventListener('visibilitychange', markRead);
+  window.addEventListener('focus', markRead);
+}
+
 // ── REFRESH LOOP ─────────────────────────────────────────────────────────────
 
 let lastRefreshStartedTimestamp = 0;
@@ -7159,6 +7506,7 @@ function startApp() {
   renderEverything();
   // after the first render, so a link to a section or guide entry has something to show
   wireSettingsAndLinks();
+  wireAlertSettings();
   scheduleNextRefresh();
   refreshEverythingNow();
   refreshSharedHistory();
