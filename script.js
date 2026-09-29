@@ -5744,11 +5744,13 @@ const GEMINI_PROVIDER = {
   name: 'Google Gemini',
   shortName: 'Gemini',
   origin: 'https://generativelanguage.googleapis.com',
-  defaultModel: 'gemini-3.8-flash',
+  // Checked with a real free-tier key on 29 Sep 2026: gemini-3.6-flash answers; gemini-3.8-flash
+  // was overloaded (503) or over quota (429), and the gemini-flash-latest alias didn't work.
+  defaultModel: 'gemini-3.6-flash',
   keyHelpUrl: 'https://aistudio.google.com/apikey',
   modelListUrl: 'https://ai.google.dev/gemini-api/docs/models',
 
-  // The model's generation from its name ("gemini-3.8-flash" → 3.8), or NaN.
+  // The model's generation from its name ("gemini-3.6-flash" → 3.6), or NaN.
   generationOf(model) {
     return Number((/^gemini-(\d+(?:\.\d+)?)/.exec(model) || [])[1]);
   },
