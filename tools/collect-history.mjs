@@ -34,7 +34,7 @@ export const HISTORY_LIMITS = {
 
 // What each sample array holds, written into the file so a reader doesn't have to guess.
 const SAMPLE_FIELDS = {
-  planet: ['time', 'health', 'players', 'regenPerSecond'],
+  planet: ['time', 'health', 'players', 'regenPerSecond', 'backupApiPercent'],
   fronts: ['time', 'allPlayers', ...ENEMY_FACTIONS],
   order: ['time', 'progress of each task…'],
 };
@@ -77,7 +77,8 @@ export async function downloadFromPrimaryApi(options = {}, takenAt = nowInSecond
   const spaceStations = await downloadOptionalJson(`${PRIMARY_API}/api/v2/space-stations`, primaryOptions);
   const warSeason = await downloadOptionalJson(`${PRIMARY_API}/raw/api/WarSeason/current/WarID`, primaryOptions);
   const backupWarStatus = await downloadOptionalJson(`${BACKUP_API}/war/status`, options);
-  return snapshotFromPrimary({ war, campaigns, assignments, spaceStations, warSeason, backupWarStatus }, takenAt);
+  const backupCampaigns = await downloadOptionalJson(`${BACKUP_API}/war/campaign`, options);
+  return snapshotFromPrimary({ war, campaigns, assignments, spaceStations, warSeason, backupWarStatus, backupCampaigns }, takenAt);
 }
 
 // Reads the war from the backup API alone.
@@ -134,10 +135,30 @@ function readDssFromBackupStatus(warStatus) {
   return numberOrNull(warStatus.spaceStations[0]?.planetIndex);
 }
 
+// A liberation or defense % from health and maximum health, to 3 decimals, or null.
+function percentDone(health, maxHealth) {
+  if (numberOrNull(health) === null || !(numberOrNull(maxHealth) > 0)) return null;
+  return Math.round(Math.max(0, Math.min(100, (1 - health / maxHealth) * 100)) * 1000) / 1000;
+}
+
+// The backup API's progress % for each planet (defense % during an attack), read in the same
+// run as the primary, so the two APIs can be compared when they disagree.
+function readBackupPercents(backupWarStatus, backupCampaigns) {
+  const percentByIndex = new Map();
+  for (const campaign of Array.isArray(backupCampaigns) ? backupCampaigns : []) {
+    if (Number.isInteger(campaign?.planetIndex)) percentByIndex.set(campaign.planetIndex, percentDone(campaign.health, campaign.maxHealth));
+  }
+  for (const event of Array.isArray(backupWarStatus?.planetEvents) ? backupWarStatus.planetEvents : []) {
+    if (Number.isInteger(event?.planetIndex)) percentByIndex.set(event.planetIndex, percentDone(event.health, event.maxHealth));
+  }
+  return percentByIndex;
+}
+
 // The primary API's feeds → a snapshot.
-export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations, warSeason, backupWarStatus }, takenAt) {
+export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations, warSeason, backupWarStatus, backupCampaigns }, takenAt) {
   if (!Array.isArray(campaigns)) throw new Error('The primary /campaigns is not a list');
   const owners = readOwnersFromBackupStatus(backupWarStatus);
+  const backupPercentByIndex = readBackupPercents(backupWarStatus, backupCampaigns);
   const battles = [];
   for (const campaign of campaigns) {
     const planet = campaign?.planet;
@@ -157,6 +178,7 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
       regenPerSecond: numberOrNull(planet.regenPerSecond),
       players: numberOrNull(planet.statistics?.playerCount) ?? 0,
       endsAt: event ? toSeconds(event.endTime) : null,
+      backupApiPercent: backupPercentByIndex.get(planet.index) ?? null,
     });
   }
 
@@ -220,6 +242,7 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
       regenPerSecond: numberOrNull(status.regenPerSecond),
       players: numberOrNull(status.players ?? campaign.players) ?? 0,
       endsAt: isDefense ? eventEndsAt ?? toSeconds(campaign.expireDateTime) : null,
+      backupApiPercent: null,
     });
   }
 
@@ -277,9 +300,11 @@ export function readHistoryFile(path) {
 }
 
 // The fields that, when any changes, start a new segment: a sample only compares with
-// samples of the same owner, campaign, defense, maximum health and war season.
-function segmentIdentity(battle, season) {
+// samples of the same owner, campaign, defense, maximum health, war season and API (the two
+// APIs have disagreed about a planet's progress, and a rate across both would be nonsense).
+function segmentIdentity(battle, season, source) {
   return {
+    source,
     kind: battle.kind,
     owner: battle.owner,
     enemy: battle.enemy,
@@ -292,8 +317,9 @@ function segmentIdentity(battle, season) {
 
 // True when a planet's last segment is the one this battle belongs to.
 function isSameSegment(segment, identity) {
-  return ['kind', 'owner', 'campaignId', 'eventId', 'maxHealth', 'season']
-    .every((field) => segment[field] === identity[field]);
+  // segments from before the source was recorded were all read from the primary API
+  return (segment.source ?? 'PRIMARY') === identity.source
+    && ['kind', 'owner', 'campaignId', 'eventId', 'maxHealth', 'season'].every((field) => segment[field] === identity[field]);
 }
 
 // Rounds a regeneration rate so the file doesn't carry float noise.
@@ -324,14 +350,14 @@ export function addSnapshot(history, snapshot) {
   for (const battle of snapshot.battles) {
     const planet = history.planets[battle.index] || (history.planets[battle.index] = { name: battle.name, segments: [] });
     planet.name = battle.name;
-    const identity = segmentIdentity(battle, season);
+    const identity = segmentIdentity(battle, season, snapshot.source);
     let segment = planet.segments[planet.segments.length - 1];
     if (!segment || !isSameSegment(segment, identity)) {
       segment = { ...identity, samples: [] };
       planet.segments.push(segment);
     }
     segment.endsAt = battle.endsAt;
-    segment.samples.push([time, battle.health, battle.players, roundRate(battle.regenPerSecond)]);
+    segment.samples.push([time, battle.health, battle.players, roundRate(battle.regenPerSecond), battle.backupApiPercent ?? null]);
   }
 
   const playersByFront = Object.fromEntries(ENEMY_FACTIONS.map((faction) => [faction, 0]));

@@ -896,11 +896,19 @@ function buildPlanetSample(planet, timestamp) {
     eventId:           isDefense ? String(planet.event.id) : null,
     maxHealth:         isDefense ? (planet.event.maxHealth ?? null) : (planet.maxHealth ?? null),
     playerCount:       planet.statistics?.playerCount ?? null,
+    source:            getHistorySourceName(),
   };
 }
 
-// Appends a sample for every planet in battle. A new defense event or a
-// changed max health means a different fight, so its series starts over.
+// Which API the page's numbers come from, as the history names it. Samples from the two APIs
+// never share a series: they have disagreed about a planet's progress, and a rate measured
+// across both would be nonsense (a 16-point gap read 30 minutes apart is "+32 %/h").
+function getHistorySourceName() {
+  return apiData.currentDataSource === 'FALLBACK' ? 'BACKUP' : 'PRIMARY';
+}
+
+// Appends a sample for every planet in battle. A new defense event, a changed max health or
+// a switch to the other API means a different series, so it starts over.
 function recordPlanetHistorySamples(nowTimestamp) {
   const previousHistory = prunePlanetHistory(apiData.planetHistoryByIndex, nowTimestamp);
   const nextHistory = {};
@@ -914,7 +922,8 @@ function recordPlanetHistorySamples(nowTimestamp) {
     const lastSample = samples[samples.length - 1];
 
     if (lastSample && (lastSample.eventId !== newSample.eventId ||
-                       lastSample.maxHealth !== newSample.maxHealth)) {
+                       lastSample.maxHealth !== newSample.maxHealth ||
+                       (lastSample.source ?? 'PRIMARY') !== newSample.source)) {
       samples = [];
     } else if (lastSample && nowTimestamp - lastSample.timestamp < SAMPLE_MERGE_WINDOW_MILLISECONDS) {
       samples = samples.slice(0, -1);
@@ -957,10 +966,13 @@ function convertSharedSegment(rawSegment) {
         eventId,
         maxHealth,
         playerCount: isFiniteNumber(playerCount) ? playerCount : null,
+        source: rawSegment.source === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
       };
     })
     .sort((first, second) => first.timestamp - second.timestamp);
   return {
+    // segments from before the collector recorded its source were all read from the primary API
+    source: rawSegment.source === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
     kind: isDefense ? 'defense' : 'liberation',
     owner: typeof rawSegment.owner === 'string' ? rawSegment.owner : null,
     eventId,
@@ -1038,13 +1050,13 @@ function refreshSharedHistoryWhenDue(nowTimestamp = Date.now()) {
   if (nowTimestamp >= nextSharedHistoryDueTimestamp) refreshSharedHistory(nowTimestamp);
 }
 
-// The shared segment for a planet's current fight: its last segment, when that is the same
-// kind of fight with the same maximum health (and owner, or defense event). Anything else is
-// an earlier fight, so it is left out.
+// The shared segment for a planet's current fight: its last segment, when that was read from
+// the same API as the page's numbers and is the same kind of fight with the same maximum health
+// (and owner, or defense event). Anything else is left out.
 function findSharedSegmentForPlanet(planet) {
   const segments = apiData.sharedHistory?.planetsByIndex[planet.index]?.segments;
   const segment = segments ? segments[segments.length - 1] : null;
-  if (!segment) return null;
+  if (!segment || segment.source !== getHistorySourceName()) return null;
   if (planetIsUnderAttack(planet)) {
     const eventId = String(planet.event.id);
     // the backup API has no event ids (the page makes one up), so there the maximum health decides
