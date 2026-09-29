@@ -3510,7 +3510,7 @@ function renderEverything() {
     renderSimpleLatestDispatch,
     renderWarMap, renderGambits, renderWarStatistics, renderTrendGraphs, renderAssignmentsInFull, renderCampaigns, renderDefenseEvents,
     renderPlanets, renderPlanetEffects, renderSpaceStation, renderNewsDispatches, renderRawData,
-    renderPlanetJumpOptions,
+    renderPlanetJumpOptions, renderPlanetDrawer,
     renderStatusBar,
   ];
   for (const renderer of renderers) {
@@ -3597,15 +3597,22 @@ function renderMajorOrder() {
   replaceContent('mo-tasks', assignment.tasks.map((task, taskPosition) => {
     const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
     const statusName = described.isComplete ? 'good' : 'neutral';
+    const pace = describeMajorOrderTaskPace(assignment, taskPosition);
+    const paceFacts = describeMajorOrderPaceFacts(pace);
+    const taskPlanet = apiData.planetsByIndex[getTaskLocation(task).planetIndex] || null;
     return buildElement('li', { className: `mo-task${described.isComplete ? ' is-complete' : ''}` }, [
       buildElement('p', { className: 'mo-task-sentence' }, [
         described.isComplete
           ? buildElement('span', { className: 'status-icon', text: '✔', attributes: { 'aria-hidden': 'true' } }) : null,
-        buildElement('span', { text: described.sentence }),
+        ...buildTaskSentenceWithPlanet(described.sentence, taskPlanet),
       ]),
       described.progressPercent !== null ? buildMeter(described.progressPercent, 'Complete', statusName) : null,
       buildElement('p', { className: 'mo-task-progress',
         text: described.isComplete ? `Done — ${described.progressText}` : described.progressText }),
+      pace.status === 'done' ? null : buildElement('div', { className: 'mo-task-pace' }, [
+        buildStatusLine(describeMajorOrderPaceLine(pace)),
+        paceFacts ? buildElement('p', { className: 'mo-task-pace-facts', text: paceFacts }) : null,
+      ]),
     ]);
   }));
 
@@ -3617,6 +3624,20 @@ function renderMajorOrder() {
     const orderSecondsLeft = getSecondsUntil(order.expiration);
     return `${order.title || 'Order'}${orderSecondsLeft ? ` (${formatDuration(orderSecondsLeft)} left)` : ''}`;
   }).join(' · '));
+}
+
+// A task sentence with its planet's name as a button that opens the planet drawer: the name
+// where the sentence says it, otherwise after the sentence.
+function buildTaskSentenceWithPlanet(sentence, planet) {
+  if (!planet) return [buildElement('span', { text: sentence })];
+  const position = sentence.toLowerCase().indexOf(planet.name.toLowerCase());
+  if (position < 0) return [buildElement('span', { text: `${sentence} ` }), buildPlanetDrawerButton(planet)];
+  const nameAsWritten = sentence.slice(position, position + planet.name.length);
+  return [
+    position > 0 ? buildElement('span', { text: sentence.slice(0, position) }) : null,
+    buildPlanetDrawerButton(planet, nameAsWritten),
+    position + planet.name.length < sentence.length ? buildElement('span', { text: sentence.slice(position + planet.name.length) }) : null,
+  ].filter(Boolean);
 }
 
 // Every planet under attack, most urgent first, as cards → #simple-defenses
@@ -3636,6 +3657,7 @@ function renderSimpleDefenses() {
     defenseOutlook: entry.outlook,
     isMajorOrderPlanet: entry.isMajorOrderPlanet,
     reasons: entry.isMajorOrderPlanet ? ['Major Order target'] : [],
+    extraContent: [buildPlanetDrawerButton(entry.planet, `More about ${entry.planet.name}`, 'link-button planet-card-more')],
   })));
 }
 
@@ -3656,6 +3678,7 @@ function renderSimpleDropTargets() {
     liberationOutlook: entry.outlook,
     reasons: entry.reasons.slice(0, 2),
     isMajorOrderPlanet: entry.isMajorOrderPlanet,
+    extraContent: [buildPlanetDrawerButton(entry.planet, `More about ${entry.planet.name}`, 'link-button planet-card-more')],
   })));
 }
 
@@ -5068,20 +5091,20 @@ function showMapPlanetInfo(planetIndex) {
   const planet = apiData.planetsByIndex[planetIndex];
   if (!planet) return;
   mapViewState.focusedPlanetIndex = planetIndex;
-  putTextInElement('map-planet-info', `${describeMapPlanet(planet)}. Press Enter or click to open its details.`);
+  putTextInElement('map-planet-info', `${describeMapPlanet(planet)}. Press Enter or click for its details beside the map.`);
   for (const marker of document.querySelectorAll('#output-war-map .map-planet.is-selected')) marker.classList.remove('is-selected');
   const marker = document.querySelector(`#output-war-map .map-planet[data-planet-index="${planetIndex}"]`);
   if (marker) marker.classList.add('is-selected');
 }
 
-// Keyboard on a focused planet: Enter/Space jump, arrows move to a neighbour.
+// Keyboard on a focused planet: Enter/Space open its details, arrows move to a neighbour.
 function handleMapKeydown(event) {
   const marker = event.target.closest && event.target.closest('.map-planet');
   if (!marker) return;
   const planetIndex = Number(marker.dataset.planetIndex);
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
-    jumpToPlanet(planetIndex);
+    openPlanetDrawer(planetIndex, { opener: marker, moveFocus: false });
     return;
   }
   const directionByKey = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
@@ -5114,7 +5137,7 @@ function renderWarMap() {
 
   const svg = createSvgElement('svg', {
     class: 'war-map', viewBox: `0 0 ${MAP_SIZE} ${MAP_SIZE}`, role: 'group',
-    'aria-label': 'Galactic war map. Tab moves between planets being fought over; arrow keys move to the nearest planet in that direction; Enter opens a planet\'s details.',
+    'aria-label': 'Galactic war map. Tab moves between planets being fought over; arrow keys move to the nearest planet in that direction; Enter shows a planet\'s details beside the map, and Escape closes them.',
   });
 
   const supplyLayer = createSvgElement('g', { class: 'map-supply-lines', 'aria-hidden': 'true' });
@@ -5182,7 +5205,7 @@ function renderWarMap() {
   });
   svg.addEventListener('click', event => {
     const marker = event.target.closest && event.target.closest('.map-planet');
-    if (marker) jumpToPlanet(Number(marker.dataset.planetIndex));
+    if (marker) openPlanetDrawer(Number(marker.dataset.planetIndex), { opener: marker, moveFocus: false });
   });
   svg.addEventListener('keydown', handleMapKeydown);
 
@@ -5203,7 +5226,7 @@ function renderWarMap() {
       buildElement('span', { className: 'section-hint', attributes: { id: 'map-zoom-level' } }),
     ]),
     buildElement('div', { className: 'map-frame' }, [svg]),
-    buildElement('p', { className: 'map-info', text: 'Hover or focus a planet for its numbers; click or press Enter to open its details.',
+    buildElement('p', { className: 'map-info', text: 'Hover or focus a planet for its numbers; click or press Enter for its details beside the map.',
       attributes: { id: 'map-planet-info', 'aria-live': 'polite' } }),
     buildElement('ul', { className: 'map-legend' }, [
       legendItem('owner-humans', 'Super Earth'),
@@ -5594,10 +5617,9 @@ const GAMBIT_VERDICT_LINES = {
   'no-source':       { status: 'neutral',  icon: '–', text: 'No gambit: attacker unknown' },
 };
 
-// A button that takes you to a planet's card or table row in advanced mode.
+// A planet name in the gambit panel: opens the planet drawer.
 function buildPlanetJumpButton(planet) {
-  return buildElement('button', { className: 'link-button', text: planet.name,
-    attributes: { type: 'button', 'data-jump-planet': planet.index, 'aria-label': `${planet.name}: show its details` } });
+  return buildPlanetDrawerButton(planet);
 }
 
 // One scored planet as a list item: name, what to do, score, and each reason with its points.
@@ -5656,11 +5678,9 @@ function buildGambitFrontPanel(analysis) {
   ]);
 }
 
-// Clicks inside the gambit panel: a planet name jumps to that planet, and an
-// Ask button requests the optional AI summary for its front.
+// Clicks inside the gambit panel: an Ask button requests the optional AI summary for its
+// front. (Planet names open the drawer through the page-wide handleDrawerClicks.)
 function handleGambitPanelClick(event) {
-  const jumpButton = event.target.closest && event.target.closest('[data-jump-planet]');
-  if (jumpButton) jumpToPlanet(Number(jumpButton.dataset.jumpPlanet));
   const askButton = event.target.closest && event.target.closest('[data-llm-faction]');
   if (askButton) requestLlmCommentary(askButton.dataset.llmFaction);
 }
@@ -6080,6 +6100,355 @@ function wireLlmSettings() {
   }
   const status = document.getElementById('llm-settings-status');
   if (status) status.textContent = describeLlmSettings();
+}
+
+// ── MAJOR ORDER PACE ─────────────────────────────────────────────────────────
+// Whether each Major Order task will be done in time at the current pace. Tasks with a target
+// amount use the order's own progress history; liberate and hold tasks follow their planet.
+
+// A short date for a finish estimate: "Thu 14:00" within the week, "3 Oct, 14:00" after.
+function formatShortDateTime(timestamp, nowTimestamp = Date.now()) {
+  const withinWeek = Math.abs(timestamp - nowTimestamp) < 6 * 24 * 3600000;
+  return new Date(timestamp).toLocaleString(DISPLAY_LOCALE, withinWeek
+    ? { weekday: 'short', hour: '2-digit', minute: '2-digit' }
+    : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// How one Major Order task is going against the deadline.
+// status: 'done' | 'on-pace' | 'behind' | 'not-enough-data'
+function describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp = Date.now()) {
+  const task = assignment.tasks[taskPosition];
+  const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
+  const deadlineTimestamp = Date.parse(assignment.expiration || '');
+  const hasDeadline = !isNaN(deadlineTimestamp);
+  const pace = {
+    status: 'not-enough-data',
+    ratePercentPerHour: null,
+    requiredPercentPerHour: null,
+    projectedFinishTimestamp: null,
+    hoursLeft: hasDeadline ? Math.max(0, (deadlineTimestamp - nowTimestamp) / 3600000) : null,
+    planetIsHeld: false,
+    planet: null,
+  };
+  if (described.isComplete) return { ...pace, status: 'done' };
+
+  let progressPercent = described.progressPercent;
+  if (taskHasTargetAmount(task)) {
+    const series = buildMajorOrderTaskSeries(assignment, taskPosition, nowTimestamp);
+    pace.ratePercentPerHour = series.measuredPercentPerHour;
+    pace.projectedFinishTimestamp = series.projectedCompletionTimestamp;
+  } else {
+    const planet = apiData.planetsByIndex[getTaskLocation(task).planetIndex];
+    if (!planet) return pace;
+    pace.planet = planet;
+    if (planetIsUnderAttack(planet)) {
+      const defense = describeDefenseOutlook(planet, getPlanetTrend(planet), nowTimestamp);
+      progressPercent = defense.progressPercent;
+      pace.ratePercentPerHour = defense.ratePercentPerHour;
+      if (defense.hoursToWin !== null) pace.projectedFinishTimestamp = nowTimestamp + defense.hoursToWin * 3600000;
+    } else if (normalizeFactionName(planet.currentOwner) === null) {
+      // ours and not under attack: a hold task is on pace as long as that lasts
+      return { ...pace, status: 'on-pace', planetIsHeld: true };
+    } else {
+      const liberation = describeLiberationOutlook(planet, getPlanetTrend(planet));
+      progressPercent = liberation.liberationPercent;
+      pace.ratePercentPerHour = liberation.netPercentPerHour;
+      if (liberation.hoursToLiberation !== null) pace.projectedFinishTimestamp = nowTimestamp + liberation.hoursToLiberation * 3600000;
+    }
+  }
+  if (pace.hoursLeft && isFiniteNumber(progressPercent)) {
+    pace.requiredPercentPerHour = (100 - progressPercent) / pace.hoursLeft;
+  }
+  if (!isFiniteNumber(pace.ratePercentPerHour)) return pace;
+  const finishesInTime = pace.projectedFinishTimestamp !== null
+    && (!hasDeadline || pace.projectedFinishTimestamp <= deadlineTimestamp);
+  pace.status = finishesInTime ? 'on-pace' : 'behind';
+  return pace;
+}
+
+// A task's pace → {status, icon, text} for its status line (icon and words, never colour alone).
+function describeMajorOrderPaceLine(pace, nowTimestamp = Date.now()) {
+  if (pace.status === 'on-pace' && pace.planetIsHeld) {
+    return { status: 'good', icon: '✔', text: 'On pace — the planet is held' };
+  }
+  if (pace.status === 'on-pace') {
+    return { status: 'good', icon: '✔', text: `On pace — done around ${formatShortDateTime(pace.projectedFinishTimestamp, nowTimestamp)} at the current rate` };
+  }
+  if (pace.status === 'behind') {
+    return pace.projectedFinishTimestamp === null
+      ? { status: 'critical', icon: '✖', text: 'Behind — no progress at the current rate' }
+      : { status: 'warning', icon: '▲', text: `Behind — done around ${formatShortDateTime(pace.projectedFinishTimestamp, nowTimestamp)} at the current rate, after the deadline` };
+  }
+  return { status: 'neutral', icon: '…', text: 'Not enough data for a pace yet' };
+}
+
+// The rate, the rate needed and the time left, as one small line.
+function describeMajorOrderPaceFacts(pace) {
+  const parts = [];
+  if (isFiniteNumber(pace.ratePercentPerHour)) parts.push(`Current rate ${formatPercentPerHour(pace.ratePercentPerHour)}`);
+  if (isFiniteNumber(pace.requiredPercentPerHour)) parts.push(`needed ${formatPercentPerHour(pace.requiredPercentPerHour)}`);
+  if (pace.hoursLeft !== null) parts.push(`${formatDuration(pace.hoursLeft * 3600)} left`);
+  const text = parts.join(' · ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// ── PLANET DRAWER ────────────────────────────────────────────────────────────
+// Everything about one planet in one panel, opened from the map, the gambit panel, the
+// simple-mode cards and Major Order tasks. It sits beside the page on a wide screen and is a
+// bottom sheet on a phone. It is not modal: the map keeps working behind it, another planet
+// just changes what it shows, and Esc or the close button shuts it.
+
+const planetDrawerState = { planetIndex: null, openerSelector: null };
+
+// A selector that finds the element that opened the drawer again after a re-render.
+function describeDrawerOpener(element) {
+  if (!element || !element.closest) return null;
+  if (element.id) return `#${element.id}`;
+  const marker = element.closest('.map-planet');
+  if (marker) return `#output-war-map .map-planet[data-planet-index="${marker.dataset.planetIndex}"]`;
+  const button = element.closest('[data-open-planet]');
+  const container = button && button.parentElement ? button.parentElement.closest('[id]') : null;
+  return button && container ? `#${container.id} [data-open-planet="${button.dataset.openPlanet}"]` : null;
+}
+
+// What the drawer shows about a planet, as plain data (the builder below turns it into DOM).
+function describePlanetForDrawer(planet, nowTimestamp = Date.now()) {
+  const ownerKey = getMapOwnerKey(planet);
+  const enemyKey = getEnemyFactionOnPlanet(planet);
+  const isDefense = planetIsUnderAttack(planet);
+  const isBattle = apiData.indexesOfPlanetsWithActiveBattles.has(planet.index);
+  const details = {
+    planet,
+    kind: isDefense ? 'defense' : isBattle ? 'liberation' : 'quiet',
+    ownerText: ownerKey === 'humans' ? 'Held by Super Earth' : ownerKey === 'unknown' ? 'Owner unknown' : `Held by the ${getFactionDisplayName(ownerKey)}`,
+    enemyKey,
+    progressPercent: null,
+    progressLabel: null,
+    verdictLine: null,
+    etaText: null,
+    timeLeftText: null,
+    playerCount: planet.statistics?.playerCount ?? null,
+    regenPercentPerHour: hasKnownHealth(planet) ? getEnemyRegenPercentPerHour(planet) : null,
+    netPercentPerHour: null,
+    modifiers: [...new Set([
+      ...asArray(planet.hazards).map(hazard => hazard.name).filter(name => name && name !== 'None'),
+      ...getKnownEffectNamesForPlanet(planet.index),
+    ])],
+    neighbours: getSupplyLineNeighbours(planet),
+    attackedFrom: findEnemyAttackSources(planet),
+    attacking: asArray(planet.attacking).map(index => apiData.planetsByIndex[index]).filter(Boolean),
+    isMajorOrderTarget: getMajorOrderTargets().planetIndexes.has(planet.index),
+    gambitCandidate: null,
+    gambitOption: null,
+    guideEntryId: null,
+  };
+
+  if (isDefense) {
+    const outlook = describeDefenseOutlook(planet, getPlanetTrend(planet), nowTimestamp);
+    details.progressPercent = outlook.progressPercent;
+    details.progressLabel = 'Defended';
+    details.verdictLine = describeDefenseVerdict(outlook);
+    details.netPercentPerHour = outlook.ratePercentPerHour;
+    details.timeLeftText = outlook.hoursLeft !== null ? formatDuration(outlook.hoursLeft * 3600) : null;
+    details.etaText = outlook.hoursToWin !== null ? `held in about ${formatDuration(outlook.hoursToWin * 3600)} (estimate)`
+      : isFiniteNumber(outlook.ratePercentPerHour) ? 'not at the current rate'
+      : outlook.trendStatus === 'no-recent-data' ? 'not enough recent data' : 'measuring…';
+    details.gambitOption = describeGambitOption(planet, nowTimestamp);
+  } else if (isBattle && hasKnownHealth(planet)) {
+    const outlook = describeLiberationOutlook(planet, getPlanetTrend(planet), estimateGalaxyOutputPerPlayer());
+    details.progressPercent = outlook.liberationPercent;
+    details.progressLabel = 'Liberated';
+    details.verdictLine = describeLiberationVerdict(outlook);
+    details.netPercentPerHour = outlook.netPercentPerHour;
+    details.etaText = outlook.verdict === 'liberated' ? 'liberated'
+      : outlook.hoursToLiberation !== null && outlook.hoursToLiberation <= ETA_LONGEST_HOURS
+        ? `about ${formatDuration(outlook.hoursToLiberation * 3600)} (estimate)`
+      : outlook.verdict === 'winning' ? 'more than two weeks'
+      : outlook.verdict === 'stalled' || outlook.verdict === 'losing' ? 'none at the current rate'
+      : outlook.trendStatus === 'no-recent-data' ? 'not enough recent data' : 'measuring…';
+  }
+
+  if (enemyKey && isBattle) {
+    details.gambitCandidate = analyseFront(enemyKey, nowTimestamp).candidates
+      .find(candidate => candidate.planet.index === planet.index) || null;
+  }
+  const guideFactionKey = enemyKey || (ownerKey !== 'humans' && ownerKey !== 'unknown' ? ownerKey : null);
+  if (guideFactionKey && findGuideEntry(getGuideData(), `faction-${guideFactionKey}`)) {
+    details.guideEntryId = `faction-${guideFactionKey}`;
+  }
+  return details;
+}
+
+// A button that opens the drawer on a planet (used in the drawer, the gambit panel, the
+// simple-mode cards and Major Order tasks).
+function buildPlanetDrawerButton(planet, text = planet.name, className = 'link-button') {
+  return buildElement('button', { className, text,
+    attributes: { type: 'button', 'data-open-planet': planet.index, 'aria-label': `${planet.name}: show its details` } });
+}
+
+// A list of planets as drawer buttons, each with its owner in words.
+function buildDrawerPlanetList(planets) {
+  return buildElement('ul', { className: 'planet-drawer-links' }, planets.map(other => {
+    const ownerKey = getMapOwnerKey(other);
+    const ownerName = ownerKey === 'humans' ? 'Super Earth' : ownerKey === 'unknown' ? 'unknown' : getFactionDisplayName(ownerKey);
+    return buildElement('li', {}, [buildPlanetDrawerButton(other), ' ', buildElement('span', { className: 'planet-drawer-owner', text: `(${ownerName})` })]);
+  }));
+}
+
+// The drawer's content for one planet.
+function buildPlanetDrawerBody(details) {
+  const planet = details.planet;
+  const sections = [
+    buildElement('p', { className: 'planet-drawer-subline', text: [details.ownerText, planet.sector ? `${planet.sector} sector` : null,
+      details.isMajorOrderTarget ? 'Major Order target' : null].filter(Boolean).join(' · ') }),
+  ];
+  if (details.progressPercent !== null) {
+    sections.push(buildMeter(details.progressPercent, details.progressLabel, details.verdictLine.status));
+    sections.push(buildStatusLine(details.verdictLine));
+  } else {
+    sections.push(buildElement('p', { className: 'section-hint', text: 'No battle on this planet right now.' }));
+  }
+  sections.push(buildFactList([
+    ['Progress', details.progressPercent !== null ? `${formatPercent(details.progressPercent)} ${details.progressLabel.toLowerCase()}` : null],
+    ['ETA', details.etaText],
+    ['Time left', details.timeLeftText],
+    ['Helldivers here', isFiniteNumber(details.playerCount) ? formatBigNumber(details.playerCount) : null],
+    ['Enemy recovers', details.kind === 'liberation' && isFiniteNumber(details.regenPercentPerHour) ? formatEnemyRecovery(details.regenPercentPerHour) : null],
+    ['Net pace', details.kind !== 'quiet' ? (isFiniteNumber(details.netPercentPerHour) ? formatPercentPerHour(details.netPercentPerHour) : 'measuring…') : null],
+  ]));
+
+  sections.push(buildElement('h3', { text: 'Modifiers' }));
+  sections.push(details.modifiers.length > 0
+    ? buildElement('ul', { className: 'chip-list', attributes: { 'aria-label': 'Modifiers' } },
+      details.modifiers.map(name => buildElement('li', { className: 'chip', text: name })))
+    : buildElement('p', { className: 'section-hint', text: 'None known.' }));
+
+  if (details.kind === 'defense') {
+    sections.push(buildElement('h3', { text: 'Attack comes from' }));
+    sections.push(details.attackedFrom.length > 0 ? buildDrawerPlanetList(details.attackedFrom)
+      : buildElement('p', { className: 'section-hint', text: 'The feeds don\'t say.' }));
+    if (details.gambitOption) {
+      sections.push(buildStatusLine(GAMBIT_VERDICT_LINES[details.gambitOption.verdict], 'verdict gambit-verdict'));
+      sections.push(buildElement('p', { className: 'section-hint', text: details.gambitOption.sentence }));
+    }
+  }
+  if (details.attacking.length > 0) {
+    sections.push(buildElement('h3', { text: 'Attack lanes from here' }));
+    sections.push(buildDrawerPlanetList(details.attacking));
+  }
+
+  sections.push(buildElement('h3', { text: 'Neighbours (supply lines)' }));
+  sections.push(details.neighbours.length > 0 ? buildDrawerPlanetList(details.neighbours)
+    : buildElement('p', { className: 'section-hint', text: apiData.currentDataSource === 'FALLBACK'
+      ? 'The backup API has no supply lines.' : 'None known.' }));
+
+  if (details.gambitCandidate) {
+    sections.push(buildElement('h3', { text: `Gambit score ${details.gambitCandidate.score}` }));
+    sections.push(buildElement('ul', { className: 'gambit-reasons' }, details.gambitCandidate.reasons.map(reason => buildElement('li', {}, [
+      buildElement('span', { className: `gambit-points ${reason.points > 0 ? 'is-plus' : 'is-minus'}`,
+        text: `${reason.points > 0 ? '+' : '−'}${Math.abs(reason.points)}` }),
+      buildElement('span', { text: reason.text }),
+    ]))));
+  }
+
+  const guideEntry = details.guideEntryId ? findGuideEntry(getGuideData(), details.guideEntryId) : null;
+  sections.push(buildElement('div', { className: 'planet-drawer-actions' }, [
+    buildElement('button', { text: 'Full details', attributes: { type: 'button', 'data-drawer-action': 'details', 'data-drawer-focus-key': 'details' } }),
+    guideEntry ? buildElement('button', { text: `Guide: ${guideEntry.name || guideEntry.title}`,
+      attributes: { type: 'button', 'data-drawer-action': 'guide', 'data-guide-entry': details.guideEntryId, 'data-drawer-focus-key': 'guide' } }) : null,
+  ]));
+  return sections;
+}
+
+// Fills the drawer for the planet it is open on (called on open and on every refresh).
+// Keeps keyboard focus on the same control when the content is rebuilt.
+function renderPlanetDrawer() {
+  const drawer = document.getElementById('planet-drawer');
+  if (!drawer || planetDrawerState.planetIndex === null) return;
+  const planet = apiData.planetsByIndex[planetDrawerState.planetIndex];
+  const focusedInside = drawer.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = focusedInside?.dataset?.drawerFocusKey || (focusedInside?.dataset?.openPlanet ? `planet-${focusedInside.dataset.openPlanet}` : null);
+
+  putTextInElement('planet-drawer-title', planet ? planet.name : 'Planet');
+  const body = planet ? buildPlanetDrawerBody(describePlanetForDrawer(planet))
+    : [buildElement('p', { className: 'empty-state', text: 'This planet is no longer in the feeds.' })];
+  replaceContent('planet-drawer-body', body);
+
+  if (focusKey) {
+    const again = drawer.querySelector(`[data-drawer-focus-key="${focusKey}"]`)
+      || drawer.querySelector(`[data-open-planet="${focusKey.replace('planet-', '')}"]`);
+    (again || document.getElementById('planet-drawer-title')).focus({ preventScroll: true });
+  }
+}
+
+// Opens the drawer on a planet. From a button, focus moves to the drawer's title; from the map
+// it stays on the marker, so the arrow keys keep moving between planets.
+function openPlanetDrawer(planetIndex, { opener = null, moveFocus = true } = {}) {
+  const drawer = document.getElementById('planet-drawer');
+  if (!drawer || !apiData.planetsByIndex[planetIndex]) return false;
+  planetDrawerState.planetIndex = planetIndex;
+  const openerSelector = describeDrawerOpener(opener);
+  // a planet button inside the drawer keeps the original opener to return to
+  if (openerSelector && !drawer.contains(opener)) planetDrawerState.openerSelector = openerSelector;
+  drawer.hidden = false;
+  document.body.classList.add('has-planet-drawer');
+  renderPlanetDrawer();
+  if (moveFocus) document.getElementById('planet-drawer-title').focus({ preventScroll: true });
+  return true;
+}
+
+// Closes the drawer and, unless told not to, puts focus back where it was opened from.
+function closePlanetDrawer({ returnFocus = true } = {}) {
+  const drawer = document.getElementById('planet-drawer');
+  if (!drawer || drawer.hidden) return;
+  drawer.hidden = true;
+  document.body.classList.remove('has-planet-drawer');
+  const opener = planetDrawerState.openerSelector ? document.querySelector(planetDrawerState.openerSelector) : null;
+  planetDrawerState.planetIndex = null;
+  planetDrawerState.openerSelector = null;
+  if (returnFocus && opener) opener.focus({ preventScroll: true });
+}
+
+// Shows a guide entry in guide mode, with the filters cleared so it isn't hidden.
+function showGuideEntry(entryId) {
+  changeViewMode('guide');
+  const searchBox = document.getElementById('guide-search');
+  const factionFilter = document.getElementById('guide-faction-filter');
+  if (searchBox) searchBox.value = '';
+  if (factionFilter) factionFilter.value = 'all';
+  applyGuideFilters();
+  focusAndReveal(document.getElementById(`guide-entry-${entryId}`));
+}
+
+// Page-wide clicks: any [data-open-planet] button opens the drawer; the drawer's own buttons
+// close it, open full details or open the guide.
+function handleDrawerClicks(event) {
+  const target = event.target;
+  if (!target || !target.closest) return;
+  const planetButton = target.closest('[data-open-planet]');
+  if (planetButton) {
+    openPlanetDrawer(Number(planetButton.dataset.openPlanet), { opener: planetButton });
+    return;
+  }
+  if (target.closest('#planet-drawer-close')) {
+    closePlanetDrawer();
+    return;
+  }
+  const action = target.closest('[data-drawer-action]');
+  if (!action) return;
+  const planetIndex = planetDrawerState.planetIndex;
+  closePlanetDrawer({ returnFocus: false });
+  if (action.dataset.drawerAction === 'details') jumpToPlanet(planetIndex);
+  if (action.dataset.drawerAction === 'guide') showGuideEntry(action.dataset.guideEntry);
+}
+
+// Esc closes the drawer from anywhere on the page.
+function handleDrawerKeydown(event) {
+  if (event.key !== 'Escape') return;
+  const drawer = document.getElementById('planet-drawer');
+  if (!drawer || drawer.hidden) return;
+  event.preventDefault();
+  closePlanetDrawer();
 }
 
 // ── ADVANCED NAVIGATION ──────────────────────────────────────────────────────
@@ -6621,6 +6990,8 @@ function startApp() {
   const guideView = document.getElementById('guide-view');
   if (guideView) guideView.addEventListener('click', handleGuideLinkClick);
   document.addEventListener('visibilitychange', handleVisibilityChange);
+  document.addEventListener('click', handleDrawerClicks);
+  document.addEventListener('keydown', handleDrawerKeydown);
 
   applySiteEmblem();
   wireAdvancedNavigation();

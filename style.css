@@ -31,6 +31,7 @@
   --faction-illuminate: #9085e9;
   --faction-unknown:    #6b7a99;
 
+  --shadow-drawer: rgba(0, 0, 0, 0.5);
   --radius: 8px;
   --gap: 16px;
   --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -869,3 +870,68 @@ input[type="search"] {
   background: var(--accent);
   color: var(--accent-ink);
 }
+
+/* ── PLANET DRAWER ────────────────────────────────────────────────────────── */
+/* Beside the page on a wide screen (the page moves over to make room), a bottom sheet on a phone. */
+
+.planet-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: min(400px, 100vw);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -8px 0 24px var(--shadow-drawer);
+  padding: 0 16px 24px;
+}
+
+@media (min-width: 1100px) {
+  body.has-planet-drawer { margin-right: 416px; }
+}
+
+.planet-drawer-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0 10px;
+  background: var(--surface-panel);
+  border-bottom: 1px solid var(--border);
+}
+.planet-drawer-title { font-size: 1.3rem; outline: none; }
+.planet-drawer-close { min-width: 44px; min-height: 44px; font-size: 1.1rem; }
+
+.planet-drawer-body { display: grid; gap: 14px; padding-top: 12px; }
+.planet-drawer-body h3 { font-size: 0.95rem; color: var(--text-secondary); margin: 4px 0 0; }
+.planet-drawer-body .verdict { margin: 0; }
+.planet-drawer-subline { margin: 0; color: var(--text-secondary); }
+.planet-drawer-links { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; list-style: none; }
+.planet-drawer-links .link-button { font-weight: 600; }
+.planet-drawer-owner { color: var(--text-muted); font-size: 0.85rem; }
+.planet-drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.planet-drawer .gambit-reasons { margin: 0; }
+
+@media (max-width: 700px) {
+  .planet-drawer {
+    top: auto;
+    left: 0;
+    width: auto;
+    max-height: 70vh;
+    border-left: 0;
+    border-top: 1px solid var(--border-strong);
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -8px 24px var(--shadow-drawer);
+  }
+}
+
+/* Major Order pace under each task */
+.mo-task-pace { display: grid; gap: 4px; margin-top: 6px; }
+.mo-task-pace .verdict { margin: 0; }
+.mo-task-pace-facts { margin: 0; color: var(--text-muted); font-size: 0.85rem; }
+.planet-card-more { margin-top: 4px; }
