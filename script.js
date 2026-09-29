@@ -35,7 +35,12 @@ const KNOWN_BIOMES_STORAGE_KEY = 'hd2_known_biomes';          // planet index �
 const VIEW_MODE_STORAGE_KEY = 'hd2_view_mode';
 const PLANET_HISTORY_MAX_AGE_MILLISECONDS = 45 * 60 * 1000;
 const MAJOR_ORDER_HISTORY_STORAGE_KEY = 'hd2_major_order_history';
-const MAJOR_ORDER_HISTORY_MAX_AGE_MILLISECONDS = 6 * 60 * 60 * 1000; // orders run for days
+const MAJOR_ORDER_HISTORY_MAX_AGE_MILLISECONDS = 24 * 60 * 60 * 1000; // orders run for days
+// A Major Order's pace is its average over the last 24 hours: busy evenings and quiet nights
+// even out, so it doesn't swing with the time of day. Under half an hour it is mostly noise.
+const MAJOR_ORDER_PACE_WINDOW_MILLISECONDS = 24 * 60 * 60 * 1000;
+const MAJOR_ORDER_PACE_MINIMUM_SPAN_MILLISECONDS = 30 * 60 * 1000;
+const MAJOR_ORDER_PACE_FULL_DAY_MILLISECONDS = 20 * 60 * 60 * 1000; // near enough a full day
 const TREND_WINDOW_MILLISECONDS = 30 * 60 * 1000;          // rates look at the last 30 minutes…
 const TREND_LONGEST_WINDOW_MILLISECONDS = 120 * 60 * 1000; // …reaching back at most 2 hours for sparse samples
 const TREND_LARGEST_GAP_MILLISECONDS = 45 * 60 * 1000;     // samples before a longer gap are not "recent"
@@ -3629,6 +3634,7 @@ function renderMajorOrder() {
       pace.status === 'done' ? null : buildElement('div', { className: 'mo-task-pace' }, [
         buildStatusLine(describeMajorOrderPaceLine(pace)),
         paceFacts ? buildElement('p', { className: 'mo-task-pace-facts', text: paceFacts }) : null,
+        pace.planetIsHeld ? null : buildElement('p', { className: 'mo-task-pace-note', text: describeMajorOrderPaceCaveat(pace.paceMinutes) }),
       ]),
     ]);
   }));
@@ -4511,18 +4517,16 @@ function buildMajorOrderTaskSeries(assignment, taskPosition, nowTimestamp = Date
   }
   series.projectedCompletionTimestamp = null;
   series.paceMinutes = 0;
-  series.notEnoughRecentData = false;
   if (readiness.ready) {
-    // the pace comes from the recent window only (30 minutes to 2 hours, no big gap), like planets
-    const { start, brokenByGap } = findTrendWindowStart(points.map(point => point.x));
-    const firstPoint = points[start];
+    // The average over the last 24 hours (or as much of them as was recorded). A kill count only
+    // goes up, so a gap in the record doesn't spoil the average across it.
     const lastPoint = points[points.length - 1];
+    const firstPoint = points.find(point => lastPoint.x - point.x <= MAJOR_ORDER_PACE_WINDOW_MILLISECONDS);
     const spanMilliseconds = lastPoint.x - firstPoint.x;
-    const measuredPercentPerHour = (lastPoint.y - firstPoint.y) / (spanMilliseconds / 3600000);
-    if (spanMilliseconds < TREND_MINIMUM_SPAN_MILLISECONDS || !isFiniteNumber(measuredPercentPerHour)) {
-      series.notEnoughRecentData = brokenByGap;
-      return series;
-    }
+    const rawPercentPerHour = (lastPoint.y - firstPoint.y) / (spanMilliseconds / 3600000);
+    if (spanMilliseconds < MAJOR_ORDER_PACE_MINIMUM_SPAN_MILLISECONDS || !isFiniteNumber(rawPercentPerHour)) return series;
+    // a count that went down is a glitch in the feed, not negative progress
+    const measuredPercentPerHour = Math.max(0, rawPercentPerHour);
     series.measuredPercentPerHour = measuredPercentPerHour;
     series.paceMinutes = spanMilliseconds / 60000;
     if (hoursLeft !== null) {
@@ -4862,7 +4866,7 @@ function renderTrendGraphs() {
       }));
       blocks.push(buildElement('p', { className: 'section-hint', text: hasPace
         ? `Measured pace ${formatPercentPerHour(taskSeries.measuredPercentPerHour)}, needed ${formatPercentPerHour(taskSeries.requiredPercentPerHour)}; `
-          + `at this pace it reaches about ${formatPercent(taskSeries.projectedPercentAtDeadline, 0)} by the deadline. An estimate from the last ${Math.round(taskSeries.paceMinutes)} minutes.`
+          + `at this pace it reaches about ${formatPercent(taskSeries.projectedPercentAtDeadline, 0)} by the deadline. ${describeMajorOrderPaceCaveat(taskSeries.paceMinutes)}`
         : `Needed pace ${formatPercentPerHour(taskSeries.requiredPercentPerHour)}. Not enough recent data for the current pace yet.` }));
     });
   }
@@ -6149,6 +6153,8 @@ function describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp = Dat
     ratePercentPerHour: null,
     requiredPercentPerHour: null,
     projectedFinishTimestamp: null,
+    projectedPercentAtDeadline: null,
+    paceMinutes: 0,
     hoursLeft: hasDeadline ? Math.max(0, (deadlineTimestamp - nowTimestamp) / 3600000) : null,
     planetIsHeld: false,
     planet: null,
@@ -6160,22 +6166,27 @@ function describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp = Dat
     const series = buildMajorOrderTaskSeries(assignment, taskPosition, nowTimestamp);
     pace.ratePercentPerHour = series.measuredPercentPerHour;
     pace.projectedFinishTimestamp = series.projectedCompletionTimestamp;
+    pace.paceMinutes = series.paceMinutes;
   } else {
     const planet = apiData.planetsByIndex[getTaskLocation(task).planetIndex];
     if (!planet) return pace;
     pace.planet = planet;
     if (planetIsUnderAttack(planet)) {
-      const defense = describeDefenseOutlook(planet, getPlanetTrend(planet), nowTimestamp);
+      const trend = getPlanetTrend(planet);
+      const defense = describeDefenseOutlook(planet, trend, nowTimestamp);
       progressPercent = defense.progressPercent;
       pace.ratePercentPerHour = defense.ratePercentPerHour;
+      pace.paceMinutes = trend.spanMinutes || 0;
       if (defense.hoursToWin !== null) pace.projectedFinishTimestamp = nowTimestamp + defense.hoursToWin * 3600000;
     } else if (normalizeFactionName(planet.currentOwner) === null) {
       // ours and not under attack: a hold task is on pace as long as that lasts
       return { ...pace, status: 'on-pace', planetIsHeld: true };
     } else {
-      const liberation = describeLiberationOutlook(planet, getPlanetTrend(planet));
+      const trend = getPlanetTrend(planet);
+      const liberation = describeLiberationOutlook(planet, trend);
       progressPercent = liberation.liberationPercent;
       pace.ratePercentPerHour = liberation.netPercentPerHour;
+      pace.paceMinutes = trend.spanMinutes || 0;
       if (liberation.hoursToLiberation !== null) pace.projectedFinishTimestamp = nowTimestamp + liberation.hoursToLiberation * 3600000;
     }
   }
@@ -6183,6 +6194,9 @@ function describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp = Dat
     pace.requiredPercentPerHour = (100 - progressPercent) / pace.hoursLeft;
   }
   if (!isFiniteNumber(pace.ratePercentPerHour)) return pace;
+  if (pace.hoursLeft !== null && isFiniteNumber(progressPercent)) {
+    pace.projectedPercentAtDeadline = Math.max(progressPercent, Math.min(100, progressPercent + pace.ratePercentPerHour * pace.hoursLeft));
+  }
   const finishesInTime = pace.projectedFinishTimestamp !== null
     && (!hasDeadline || pace.projectedFinishTimestamp <= deadlineTimestamp);
   pace.status = finishesInTime ? 'on-pace' : 'behind';
@@ -6198,21 +6212,46 @@ function describeMajorOrderPaceLine(pace, nowTimestamp = Date.now()) {
     return { status: 'good', icon: '✔', text: `On pace — done around ${formatShortDateTime(pace.projectedFinishTimestamp, nowTimestamp)} at the current rate` };
   }
   if (pace.status === 'behind') {
-    return pace.projectedFinishTimestamp === null
-      ? { status: 'critical', icon: '✖', text: 'Behind — no progress at the current rate' }
-      : { status: 'warning', icon: '▲', text: `Behind — done around ${formatShortDateTime(pace.projectedFinishTimestamp, nowTimestamp)} at the current rate, after the deadline` };
+    if (pace.projectedFinishTimestamp === null) return { status: 'critical', icon: '✖', text: 'Behind — no progress at the current rate' };
+    return { status: 'warning', icon: '▲', text: isFiniteNumber(pace.projectedPercentAtDeadline)
+      ? `Behind — projected about ${formatPercent(pace.projectedPercentAtDeadline, 0)} by the deadline at the current rate`
+      : `Behind — done around ${formatShortDateTime(pace.projectedFinishTimestamp, nowTimestamp)} at the current rate, after the deadline` };
   }
   return { status: 'neutral', icon: '…', text: 'Not enough data for a pace yet' };
 }
 
-// The rate, the rate needed and the time left, as one small line.
-function describeMajorOrderPaceFacts(pace) {
+// How long a pace was measured over, in words: "the last 24 h", "the last 40 min".
+function describePaceSpan(paceMinutes) {
+  return paceMinutes >= 90 ? `the last ${Math.round(paceMinutes / 60)} h` : `the last ${Math.round(paceMinutes)} min`;
+}
+
+// The rate (and what it was measured over), the rate needed, the time left, and the projected
+// % at the deadline, as one small line.
+function describeMajorOrderPaceFacts(pace, nowTimestamp = Date.now()) {
   const parts = [];
-  if (isFiniteNumber(pace.ratePercentPerHour)) parts.push(`Current rate ${formatPercentPerHour(pace.ratePercentPerHour)}`);
+  if (isFiniteNumber(pace.ratePercentPerHour)) {
+    parts.push(`Current rate ${formatPercentPerHour(pace.ratePercentPerHour)}${pace.paceMinutes > 0 ? ` over ${describePaceSpan(pace.paceMinutes)}` : ''}`);
+  }
   if (isFiniteNumber(pace.requiredPercentPerHour)) parts.push(`needed ${formatPercentPerHour(pace.requiredPercentPerHour)}`);
   if (pace.hoursLeft !== null) parts.push(`${formatDuration(pace.hoursLeft * 3600)} left`);
+  // when behind, the status line already gives the projected %
+  if (isFiniteNumber(pace.projectedPercentAtDeadline) && pace.status !== 'behind') {
+    parts.push(`projected ${formatPercent(pace.projectedPercentAtDeadline, 0)} by the deadline`);
+  }
+  if (pace.status === 'behind' && pace.projectedFinishTimestamp !== null) parts.push(`done around ${formatShortDateTime(pace.projectedFinishTimestamp, nowTimestamp)}`);
   const text = parts.join(' · ');
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// The warning every Major Order estimate carries: the pace follows how many Helldivers are
+// playing, which rises and falls through the day and the week. A pace measured over less than
+// a day says so, because it may only have seen the busy (or the quiet) hours.
+function describeMajorOrderPaceCaveat(paceMinutes) {
+  const caveat = 'An estimate: it changes as the number of Helldivers playing rises and falls through the day and the week.';
+  if (paceMinutes > 0 && paceMinutes * 60000 < MAJOR_ORDER_PACE_FULL_DAY_MILLISECONDS) {
+    return `${caveat} Measured over ${describePaceSpan(paceMinutes)} only, so it may not have seen the busy and the quiet hours yet.`;
+  }
+  return caveat;
 }
 
 // ── PLANET DRAWER ────────────────────────────────────────────────────────────
