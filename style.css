@@ -248,6 +248,7 @@ main { outline: none; }
 .mo-task-progress { color: var(--text-secondary); font-size: 0.9rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .mo-task.is-complete .mo-task-sentence .status-icon { color: var(--status-good); margin-right: 6px; }
 .mo-reward { font-weight: 600; }
+.mo-note { margin: 12px 0 0; font-size: 0.85rem; }
 .mo-more { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
 
 /* ── METERS AND STATUS LINES ──────────────────────────────────────────────── */

@@ -10,7 +10,8 @@ next, a galactic war map, gambit analysis per front and a field guide.
 - **Online:** https://mrhamster112.github.io/DropIntel/
 - **On your own computer:** [download DropIntel (ZIP)](https://github.com/MrHamster112/DropIntel/archive/refs/heads/main.zip),
   unzip it and double-click `index.html`. Nothing to install. The live war data needs an internet
-  connection; the field guide works without one.
+  connection; the field guide works without one. The Major Order in a downloaded copy can be
+  worded wrong (see below).
 
 The page refreshes itself every minute. Settings (view mode, folded sections, and an optional
 Google Gemini key for AI summaries) are kept only in your own browser.
@@ -31,10 +32,12 @@ Unofficial fan project, not affiliated with or endorsed by Arrowhead Game Studio
 Interactive Entertainment. HELLDIVERS™ 2 is their trademark. The planet landscapes are drawn by
 the page itself. Faction logos © Arrowhead Game Studios, as traced by Helldivers Wiki contributors.
 War data from the community APIs at api.helldivers2.dev and helldiverstrainingmanual.com.
-Enemy and stratagem names in Major Order tasks come from the data of the Galactic Wide Web
-Discord bot (github.com/Stonemercy/Galactic-Wide-Web).
 
-## Fixing a Major Order
+## Major Orders can be wrong
 
-If the page words a Major Order task wrong, or shows an enemy by number, edit
-`major-order-fixes.js` in this repository (the pencil button on GitHub). The file explains how.
+The page works out Major Order tasks by itself from the game's data. It names the enemy faction
+("Kill 25.00M Terminids"), not the exact enemy the game names, so a task can be worded less
+exactly or wrong. The online version is corrected by hand in `major-order-fixes.js` in this
+repository (open it on GitHub and press the pencil; the file explains how). **A downloaded
+(offline) copy only has the corrections made before you downloaded it**, so its Major Order
+can be wrong: check the game, or use the online version.
