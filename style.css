@@ -456,6 +456,7 @@ main { outline: none; }
 .chart-row-label { fill: var(--text-primary); font-size: 13px; }
 .chart-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .chart-end-dot { stroke: var(--surface-panel); stroke-width: 2; }
+.chart-lone-point { stroke: none; }
 .chart-crosshair { stroke: var(--text-muted); stroke-width: 1; }
 .chart-reference { fill: none; stroke-width: 1.5; stroke-dasharray: 5 4; }
 .reference-needed { stroke: var(--text-muted); }
@@ -833,4 +834,38 @@ input[type="search"] {
 @media (forced-colors: active) {
   .meter, .pressure-track { border: 1px solid CanvasText; }
   .meter-fill, .pressure-bar { background: Highlight !important; }
+}
+
+/* Graph range buttons (1h / 6h / 24h / 7d) above the advanced graphs */
+.graph-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+
+.graph-controls .graph-history-source {
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+.graph-range {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 3px;
+  background: var(--surface-panel);
+}
+.graph-range-button {
+  border: 0;
+  background: transparent;
+  min-height: 34px;
+  padding: 4px 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.graph-range-button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
 }

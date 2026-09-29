@@ -36,8 +36,11 @@ const VIEW_MODE_STORAGE_KEY = 'hd2_view_mode';
 const PLANET_HISTORY_MAX_AGE_MILLISECONDS = 45 * 60 * 1000;
 const MAJOR_ORDER_HISTORY_STORAGE_KEY = 'hd2_major_order_history';
 const MAJOR_ORDER_HISTORY_MAX_AGE_MILLISECONDS = 6 * 60 * 60 * 1000; // orders run for days
-const TREND_WINDOW_MILLISECONDS = 30 * 60 * 1000;
+const TREND_WINDOW_MILLISECONDS = 30 * 60 * 1000;          // rates look at the last 30 minutes…
+const TREND_LONGEST_WINDOW_MILLISECONDS = 120 * 60 * 1000; // …reaching back at most 2 hours for sparse samples
+const TREND_LARGEST_GAP_MILLISECONDS = 45 * 60 * 1000;     // samples before a longer gap are not "recent"
 const TREND_MINIMUM_SPAN_MILLISECONDS = 5 * 60 * 1000;   // shorter spans are mostly noise
+const ETA_LONGEST_HOURS = 14 * 24;                        // past two weeks an ETA says nothing useful
 const TREND_STALL_THRESHOLD_PERCENT_PER_HOUR = 0.05;
 const SAMPLE_MERGE_WINDOW_MILLISECONDS = 20 * 1000;       // two renders in one cycle = one sample
 const MINIMUM_PLAYERS_FOR_OUTPUT_ESTIMATE = 100;          // tiny squads make per-player maths noisy
@@ -215,6 +218,8 @@ const apiData = {
   warTimeCapturedAtTimestamp: null, // Date.now() when currentWarTimeSeconds was read
   planetHistoryByIndex: loadPlanetHistory(Date.now()), // samples for trend maths
   majorOrderHistory: loadMajorOrderHistory(Date.now()), // [{timestamp, assignmentId, progress[]}]
+  sharedHistory: null,        // the collector's history.json, converted; in memory only (SHARED WAR HISTORY)
+  sharedHistoryStatus: 'loading', // 'loading' | 'loaded' | 'unavailable'
   knownBiomeNameByPlanetIndex: loadKnownBiomes(), // primary biome names, remembered for the backup API
   currentDataSource: null,    // 'PRIMARY' | 'FALLBACK' | null
   lastSuccessfulFetchTimestamp: null,
@@ -919,6 +924,154 @@ function recordPlanetHistorySamples(nowTimestamp) {
 
   apiData.planetHistoryByIndex = nextHistory;
   writeStoredValue(PLANET_HISTORY_STORAGE_KEY, JSON.stringify(nextHistory));
+}
+
+// ── SHARED WAR HISTORY ───────────────────────────────────────────────────────
+// The public repository records the war every 15 minutes (tools/collect-history.mjs) into
+// history.json on its war-history branch. The page reads it at start and every 10 minutes, keeps
+// it in memory only, and merges it with its own samples, so trends and graphs start with hours
+// of history instead of minutes. Offline, a broken file or any other failure quietly leaves the
+// page on its own samples, as before.
+
+const SHARED_HISTORY_URL = 'https://raw.githubusercontent.com/MrHamster112/DropIntel/war-history/history.json';
+const SHARED_HISTORY_REFRESH_MILLISECONDS = 10 * 60 * 1000;
+const SHARED_HISTORY_VERSION = 1;
+
+let sharedHistoryDownload = null;
+let nextSharedHistoryDueTimestamp = 0;
+
+// One collector segment → the page's own sample shape, oldest first. Health becomes the same
+// liberation or defense % the page computes; anything unreadable is dropped.
+function convertSharedSegment(rawSegment) {
+  const isDefense = rawSegment.kind === 'defense';
+  const maxHealth = isFiniteNumber(rawSegment.maxHealth) && rawSegment.maxHealth > 0 ? rawSegment.maxHealth : null;
+  const eventId = isDefense && rawSegment.eventId !== null && rawSegment.eventId !== undefined ? String(rawSegment.eventId) : null;
+  const samples = maxHealth === null ? [] : asArray(rawSegment.samples)
+    .filter(sample => Array.isArray(sample) && isFiniteNumber(sample[0]) && isFiniteNumber(sample[1]))
+    .map(([time, health, playerCount]) => {
+      const percent = Math.max(0, Math.min(100, (1 - health / maxHealth) * 100));
+      return {
+        timestamp: time * 1000,
+        liberationPercent: isDefense ? null : percent,
+        defensePercent: isDefense ? percent : null,
+        eventId,
+        maxHealth,
+        playerCount: isFiniteNumber(playerCount) ? playerCount : null,
+      };
+    })
+    .sort((first, second) => first.timestamp - second.timestamp);
+  return {
+    kind: isDefense ? 'defense' : 'liberation',
+    owner: typeof rawSegment.owner === 'string' ? rawSegment.owner : null,
+    eventId,
+    maxHealth,
+    samples,
+  };
+}
+
+// The collector's history.json → { updatedAtTimestamp, planetsByIndex, frontSamples,
+// majorOrderSamples, events }, or null when it isn't a history file this page understands.
+function convertSharedHistory(rawHistory) {
+  if (!isPlainObject(rawHistory) || rawHistory.version !== SHARED_HISTORY_VERSION) return null;
+  if (!isFiniteNumber(rawHistory.updatedAt) || !isPlainObject(rawHistory.planets)) return null;
+
+  const planetsByIndex = {};
+  for (const [planetIndex, rawPlanet] of Object.entries(rawHistory.planets)) {
+    const segments = asArray(rawPlanet?.segments).filter(isPlainObject).map(convertSharedSegment)
+      .filter(segment => segment.samples.length > 0);
+    if (segments.length > 0) planetsByIndex[planetIndex] = { name: String(rawPlanet.name || ''), segments };
+  }
+
+  // fronts: [time, allPlayers, <one column per enemy>], named by fields.fronts
+  const frontFields = asArray(rawHistory.fields?.fronts);
+  const frontColumns = FRONT_ORDER.map(factionKey => ({
+    factionKey, position: frontFields.findIndex(field => normalizeFactionName(String(field)) === factionKey),
+  })).filter(column => column.position > 0);
+  const frontSamples = asArray(rawHistory.fronts)
+    .filter(sample => Array.isArray(sample) && isFiniteNumber(sample[0]))
+    .map(sample => ({
+      timestamp: sample[0] * 1000,
+      playersByFaction: Object.fromEntries(frontColumns
+        .filter(column => isFiniteNumber(sample[column.position]))
+        .map(column => [column.factionKey, sample[column.position]])),
+    }))
+    .sort((first, second) => first.timestamp - second.timestamp);
+
+  const majorOrderSamples = [];
+  for (const [assignmentId, rawOrder] of Object.entries(isPlainObject(rawHistory.orders) ? rawHistory.orders : {})) {
+    for (const sample of asArray(rawOrder?.samples)) {
+      if (!Array.isArray(sample) || !isFiniteNumber(sample[0])) continue;
+      majorOrderSamples.push({ timestamp: sample[0] * 1000, assignmentId,
+        progress: sample.slice(1).map(value => (isFiniteNumber(value) ? value : null)) });
+    }
+  }
+  majorOrderSamples.sort((first, second) => first.timestamp - second.timestamp);
+
+  return {
+    updatedAtTimestamp: rawHistory.updatedAt * 1000,
+    planetsByIndex,
+    frontSamples,
+    majorOrderSamples,
+    events: asArray(rawHistory.events).filter(event => isPlainObject(event) && isFiniteNumber(event.time)),
+  };
+}
+
+// Downloads the shared history (single-flight) and re-renders. Never throws: a failure keeps
+// the last good copy, or none, and the page carries on with its own samples.
+function refreshSharedHistory(nowTimestamp = Date.now()) {
+  if (sharedHistoryDownload) return sharedHistoryDownload;
+  nextSharedHistoryDueTimestamp = nowTimestamp + SHARED_HISTORY_REFRESH_MILLISECONDS;
+  sharedHistoryDownload = downloadJson(SHARED_HISTORY_URL, { cache: 'no-cache' }, 0)
+    .then(rawHistory => convertSharedHistory(rawHistory))
+    .catch(() => null)
+    .then(converted => {
+      if (converted) apiData.sharedHistory = converted;
+      apiData.sharedHistoryStatus = apiData.sharedHistory ? 'loaded' : 'unavailable';
+      renderEverything();
+    })
+    .finally(() => { sharedHistoryDownload = null; });
+  return sharedHistoryDownload;
+}
+
+// Refreshes the shared history once its 10 minutes are up (wall clock, like the war feeds).
+function refreshSharedHistoryWhenDue(nowTimestamp = Date.now()) {
+  if (nowTimestamp >= nextSharedHistoryDueTimestamp) refreshSharedHistory(nowTimestamp);
+}
+
+// The shared segment for a planet's current fight: its last segment, when that is the same
+// kind of fight with the same maximum health (and owner, or defense event). Anything else is
+// an earlier fight, so it is left out.
+function findSharedSegmentForPlanet(planet) {
+  const segments = apiData.sharedHistory?.planetsByIndex[planet.index]?.segments;
+  const segment = segments ? segments[segments.length - 1] : null;
+  if (!segment) return null;
+  if (planetIsUnderAttack(planet)) {
+    const eventId = String(planet.event.id);
+    // the backup API has no event ids (the page makes one up), so there the maximum health decides
+    const sameEvent = segment.eventId === eventId || eventId.startsWith('backup-');
+    return segment.kind === 'defense' && sameEvent && segment.maxHealth === (planet.event.maxHealth ?? null) ? segment : null;
+  }
+  const sameOwner = normalizeFactionName(segment.owner) === normalizeFactionName(planet.currentOwner);
+  return segment.kind === 'liberation' && sameOwner && segment.maxHealth === planet.maxHealth ? segment : null;
+}
+
+// Joins shared samples with the page's own: the shared ones up to where the page's begin,
+// so the two sources never interleave.
+function mergeSampleLists(sharedSamples, ownSamples) {
+  const ownList = asArray(ownSamples);
+  const firstOwnTimestamp = ownList.length > 0 ? ownList[0].timestamp : Infinity;
+  return [...asArray(sharedSamples).filter(sample => sample.timestamp < firstOwnTimestamp), ...ownList];
+}
+
+// A planet's samples for its current fight, shared history first, oldest first.
+function getPlanetSamples(planet) {
+  return mergeSampleLists(findSharedSegmentForPlanet(planet)?.samples, apiData.planetHistoryByIndex[planet.index]);
+}
+
+// "History: shared, updated 7 min ago" or "History: this browser only".
+function describeHistorySource(nowTimestamp = Date.now()) {
+  if (apiData.sharedHistoryStatus !== 'loaded' || !apiData.sharedHistory) return 'History: this browser only';
+  return `History: shared, updated ${formatTimeAgo(apiData.sharedHistory.updatedAtTimestamp, nowTimestamp)}`;
 }
 
 // ── BIOME NAMES AND FACTION ICONS ────────────────────────────────────────────
@@ -2563,20 +2716,43 @@ function getKnownEffectNamesForPlanet(planetIndex) {
 // Everything here is maths on apiData; nothing is fetched. Rates are measured
 // from the remembered samples, so they need a few minutes of watching first.
 
+// Where the measuring window starts in a list of sample times (oldest first). It covers the
+// last 30 minutes, reaching back to the first sample at least 30 minutes old so sparse shared
+// samples still give a full half hour, but never past 2 hours and never across a gap of more
+// than 45 minutes. brokenByGap says a gap cut off older samples.
+function findTrendWindowStart(timestamps) {
+  const latest = timestamps[timestamps.length - 1];
+  let start = timestamps.length - 1;
+  let brokenByGap = false;
+  while (start > 0 && latest - timestamps[start] < TREND_WINDOW_MILLISECONDS) {
+    const earlier = timestamps[start - 1];
+    if (timestamps[start] - earlier > TREND_LARGEST_GAP_MILLISECONDS) {
+      brokenByGap = true;
+      break;
+    }
+    if (latest - earlier > TREND_LONGEST_WINDOW_MILLISECONDS) break;
+    start--;
+  }
+  return { start, brokenByGap };
+}
+
 // How fast a planet's liberation (or defense) % is moving, from its samples.
-// Returns {status:'gathering'} until the samples span long enough.
+// Returns {status:'gathering'} until the samples span long enough, or
+// {status:'no-recent-data'} when a gap left too little recent history.
 function calculatePlanetTrend(samples) {
-  const sampleList = asArray(samples);
+  const sampleList = asArray(samples).filter(sample => isFiniteNumber(sample?.timestamp));
   if (sampleList.length < 2) return { status: 'gathering', spanMinutes: 0 };
 
   const latestSample = sampleList[sampleList.length - 1];
-  const windowSamples = sampleList.filter(sample =>
-    latestSample.timestamp - sample.timestamp <= TREND_WINDOW_MILLISECONDS);
+  const { start, brokenByGap } = findTrendWindowStart(sampleList.map(sample => sample.timestamp));
+  const windowSamples = sampleList.slice(start);
   const earliestSample = windowSamples[0];
   const spanMilliseconds = latestSample.timestamp - earliestSample.timestamp;
   const spanMinutes = spanMilliseconds / 60000;
 
-  if (spanMilliseconds < TREND_MINIMUM_SPAN_MILLISECONDS) return { status: 'gathering', spanMinutes };
+  if (spanMilliseconds < TREND_MINIMUM_SPAN_MILLISECONDS) {
+    return { status: brokenByGap ? 'no-recent-data' : 'gathering', spanMinutes };
+  }
 
   const measuredField = latestSample.defensePercent !== null ? 'defensePercent' : 'liberationPercent';
   if (!isFiniteNumber(earliestSample[measuredField]) || !isFiniteNumber(latestSample[measuredField])) {
@@ -2585,6 +2761,7 @@ function calculatePlanetTrend(samples) {
 
   const percentPerHour =
     (latestSample[measuredField] - earliestSample[measuredField]) / (spanMilliseconds / 3600000);
+  if (!isFiniteNumber(percentPerHour)) return { status: 'gathering', spanMinutes };
 
   return {
     status: 'measured',
@@ -2597,9 +2774,19 @@ function calculatePlanetTrend(samples) {
   };
 }
 
-// The measured trend for a planet, straight from apiData's history.
+// The measured trend for a planet, from the shared history and the page's own samples.
 function getPlanetTrend(planet) {
-  return calculatePlanetTrend(apiData.planetHistoryByIndex[planet.index]);
+  return calculatePlanetTrend(getPlanetSamples(planet));
+}
+
+// An ETA or duration in hours, or null when it is negative, infinite or not a number.
+function sanitizeHours(hours) {
+  return isFiniteNumber(hours) && hours >= 0 ? hours : null;
+}
+
+// A whole number of Helldivers, or null when the maths ran off the rails.
+function sanitizePlayerCount(count) {
+  return isFiniteNumber(count) && count >= 0 ? Math.ceil(count) : null;
 }
 
 // Absolute planet health players remove per hour, per Helldiver, from a trend.
@@ -2657,7 +2844,7 @@ function describeLiberationOutlook(planet, trend, galaxyOutputPerPlayer = null) 
   const outputPerPlayer = ownOutputPerPlayer ?? galaxyOutputPerPlayer;
   const regenHealthPerHour = (planet.regenPerSecond || 0) * 3600;
   if (isFiniteNumber(outputPerPlayer) && outputPerPlayer > 0 && regenHealthPerHour > 0) {
-    outlook.playersNeededToOutpaceRegen = Math.ceil(regenHealthPerHour / outputPerPlayer);
+    outlook.playersNeededToOutpaceRegen = sanitizePlayerCount(regenHealthPerHour / outputPerPlayer);
     outlook.playersNeededIsGalaxyEstimate = ownOutputPerPlayer === null;
   }
 
@@ -2672,7 +2859,7 @@ function describeLiberationOutlook(planet, trend, galaxyOutputPerPlayer = null) 
     outlook.verdict = 'stalled';
   } else if (trend.percentPerHour > 0) {
     outlook.verdict = 'winning';
-    outlook.hoursToLiberation = (100 - outlook.liberationPercent) / trend.percentPerHour;
+    outlook.hoursToLiberation = sanitizeHours((100 - outlook.liberationPercent) / trend.percentPerHour);
   } else {
     outlook.verdict = 'losing';
   }
@@ -2700,6 +2887,7 @@ function describeDefenseOutlook(planet, trend, nowTimestamp = Date.now()) {
     hoursToWin: null,
     playersNeededToWinInTime: null,
     playerCount,
+    trendStatus: trend.status,
   };
 
   if (progressPercent >= 100) return { ...outlook, verdict: 'won' };
@@ -2719,10 +2907,10 @@ function describeDefenseOutlook(planet, trend, nowTimestamp = Date.now()) {
   const rate = outlook.ratePercentPerHour;
   if (rate === null || hoursLeft === null) return outlook;
 
-  outlook.projectedPercentAtDeadline = Math.min(100, progressPercent + rate * hoursLeft);
-  if (rate > 0) outlook.hoursToWin = (100 - progressPercent) / rate;
+  outlook.projectedPercentAtDeadline = Math.max(0, Math.min(100, progressPercent + rate * hoursLeft));
+  if (rate > 0) outlook.hoursToWin = sanitizeHours((100 - progressPercent) / rate);
   if (rate > 0 && playerCount > 0) {
-    outlook.playersNeededToWinInTime = Math.ceil(playerCount * outlook.requiredPercentPerHour / rate);
+    outlook.playersNeededToWinInTime = sanitizePlayerCount(playerCount * outlook.requiredPercentPerHour / rate);
   }
 
   if (progressPercent + rate * hoursLeft >= 100) outlook.verdict = 'on-track';
@@ -3162,6 +3350,9 @@ function describeLiberationVerdict(outlook) {
     case 'liberated':
       return { status: 'good', icon: '✔', text: 'Liberated' };
     case 'winning':
+      if (outlook.hoursToLiberation === null || outlook.hoursToLiberation > ETA_LONGEST_HOURS) {
+        return { status: 'good', icon: '▲', text: 'Winning slowly — more than two weeks to go at this pace' };
+      }
       return { status: 'good', icon: '▲',
         text: `Winning — liberated in about ${formatDuration(outlook.hoursToLiberation * 3600)} at this pace` };
     case 'stalled':
@@ -3172,7 +3363,9 @@ function describeLiberationVerdict(outlook) {
     case 'losing':
       return { status: 'critical', icon: '▼', text: 'Losing ground — the enemy is taking it back' };
     default:
-      return { status: 'neutral', icon: '…', text: 'Measuring progress — needs a few minutes of watching' };
+      return outlook.trendStatus === 'no-recent-data'
+        ? { status: 'neutral', icon: '…', text: 'Not enough recent data for a pace yet' }
+        : { status: 'neutral', icon: '…', text: 'Measuring progress — needs a few minutes of watching' };
   }
 }
 
@@ -3186,7 +3379,8 @@ function describeDefenseVerdict(outlook) {
       return { status: 'neutral', icon: '•', text: 'Deadline passed — waiting for the result' };
     case 'on-track':
       return { status: 'good', icon: '✔',
-        text: `On track — held in about ${formatDuration(outlook.hoursToWin * 3600)}` + (timeLeft ? `, ${timeLeft} before the deadline` : '') };
+        text: (outlook.hoursToWin !== null ? `On track — held in about ${formatDuration(outlook.hoursToWin * 3600)}` : 'On track')
+          + (timeLeft ? `, ${timeLeft} before the deadline` : '') };
     case 'at-risk':
       return { status: 'warning', icon: '▲',
         text: outlook.playersNeededToWinInTime
@@ -3196,7 +3390,8 @@ function describeDefenseVerdict(outlook) {
       return { status: 'critical', icon: '✖', text: 'Being lost — no progress against the attack' };
     default:
       return { status: 'neutral', icon: '…',
-        text: timeLeft ? `Measuring progress — deadline in ${timeLeft}` : 'Measuring progress' };
+        text: (outlook.trendStatus === 'no-recent-data' ? 'Not enough recent data for a pace yet' : 'Measuring progress')
+          + (timeLeft ? ` — deadline in ${timeLeft}` : '') };
   }
 }
 
@@ -4090,7 +4285,7 @@ function renderStatusBar() {
     statusBar.dataset.connectionState = state.kind;
   }
   putTextInElement('data-age', state.kind === 'loading' || state.kind === 'offline' ? ''
-    : `Updated ${state.dataAgeText}${state.isRefreshing ? ' · refreshing…' : ''}`);
+    : `Updated ${state.dataAgeText}${state.isRefreshing ? ' · refreshing…' : ''} · ${describeHistorySource()}`);
 }
 
 // What the countdown says: refreshing, retrying after a failure, or the next refresh.
@@ -4168,8 +4363,41 @@ function buildPlanetProgressSeries(samples) {
 // The order fronts are drawn in, so each keeps its colour and position.
 const FRONT_ORDER = ['terminids', 'automaton', 'illuminate'];
 
+// How far back the graphs look. The page's own samples cover 45 minutes (6 hours for the Major
+// Order); the longer ranges fill from the shared history.
+const GRAPH_RANGES = [
+  { hours: 1, label: '1h' }, { hours: 6, label: '6h' }, { hours: 24, label: '24h' }, { hours: 168, label: '7d' },
+];
+const GRAPH_RANGE_STORAGE_KEY = 'hd2_graph_range';
+// Lines break where samples are further apart than this (the shared history is hourly after 48 h).
+const CHART_GAP_MILLISECONDS = 90 * 60 * 1000;
+
+// The remembered graph range in hours, 6 when nothing valid is stored.
+function readGraphRangeHours() {
+  const storedHours = Number(readStoredValue(GRAPH_RANGE_STORAGE_KEY));
+  return GRAPH_RANGES.some(range => range.hours === storedHours) ? storedHours : 6;
+}
+
+let graphRangeHours = readGraphRangeHours();
+
+// Called by the range buttons: remembers the range and redraws the graphs.
+function changeGraphRange(hours) {
+  if (!GRAPH_RANGES.some(range => range.hours === hours)) return;
+  graphRangeHours = hours;
+  writeStoredValue(GRAPH_RANGE_STORAGE_KEY, String(hours));
+  renderTrendGraphs();
+  const pressedButton = document.querySelector(`.graph-range-button[data-graph-range="${hours}"]`);
+  if (pressedButton) pressedButton.focus();
+}
+
+// The points of a line that fall inside the chosen range.
+function keepPointsInRange(points, nowTimestamp = Date.now()) {
+  const rangeStart = nowTimestamp - graphRangeHours * 3600000;
+  return asArray(points).filter(point => point.x >= rangeStart);
+}
+
 // Helldivers on active campaigns per enemy front at every refresh the page
-// remembers, summed from the per-planet samples.
+// remembers, summed from the per-planet samples, after the shared history's own totals.
 function buildFrontPlayerSeries() {
   const playersByTimestamp = {};
   for (const [planetIndex, samples] of Object.entries(apiData.planetHistoryByIndex)) {
@@ -4181,6 +4409,12 @@ function buildFrontPlayerSeries() {
       const totals = playersByTimestamp[sample.timestamp] || (playersByTimestamp[sample.timestamp] = {});
       totals[factionKey] = (totals[factionKey] || 0) + sample.playerCount;
     }
+  }
+  // the shared history's front totals (same sums, taken by the collector) up to where ours begin
+  const firstOwnTimestamp = Math.min(...Object.keys(playersByTimestamp).map(Number));
+  for (const sharedSample of asArray(apiData.sharedHistory?.frontSamples)) {
+    if (sharedSample.timestamp >= firstOwnTimestamp) break;
+    playersByTimestamp[sharedSample.timestamp] = { ...sharedSample.playersByFaction };
   }
   const timestamps = Object.keys(playersByTimestamp).map(Number).sort((first, second) => first - second);
   const factionKeys = FRONT_ORDER.filter(factionKey =>
@@ -4206,8 +4440,7 @@ function taskHasTargetAmount(task) {
 function buildMajorOrderTaskSeries(assignment, taskPosition, nowTimestamp = Date.now()) {
   const task = assignment.tasks[taskPosition];
   const current = describeAssignmentTask(task, assignment.progress[taskPosition]);
-  const points = asArray(apiData.majorOrderHistory)
-    .filter(sample => sample.assignmentId === String(assignment.id))
+  const points = getMajorOrderSamples(String(assignment.id))
     .map(sample => ({ x: sample.timestamp, y: describeAssignmentTask(task, sample.progress[taskPosition]).progressPercent }))
     .filter(point => isFiniteNumber(point.y));
   const readiness = describeHistoryReadiness(points.map(point => point.x));
@@ -4231,18 +4464,36 @@ function buildMajorOrderTaskSeries(assignment, taskPosition, nowTimestamp = Date
     series.requiredPercentPerHour = (100 - current.progressPercent) / hoursLeft;
   }
   series.projectedCompletionTimestamp = null;
+  series.paceMinutes = 0;
+  series.notEnoughRecentData = false;
   if (readiness.ready) {
-    const firstPoint = points[0];
+    // the pace comes from the recent window only (30 minutes to 2 hours, no big gap), like planets
+    const { start, brokenByGap } = findTrendWindowStart(points.map(point => point.x));
+    const firstPoint = points[start];
     const lastPoint = points[points.length - 1];
-    series.measuredPercentPerHour = (lastPoint.y - firstPoint.y) / ((lastPoint.x - firstPoint.x) / 3600000);
-    if (hoursLeft !== null) {
-      series.projectedPercentAtDeadline = Math.max(0, Math.min(100, lastPoint.y + series.measuredPercentPerHour * hoursLeft));
+    const spanMilliseconds = lastPoint.x - firstPoint.x;
+    const measuredPercentPerHour = (lastPoint.y - firstPoint.y) / (spanMilliseconds / 3600000);
+    if (spanMilliseconds < TREND_MINIMUM_SPAN_MILLISECONDS || !isFiniteNumber(measuredPercentPerHour)) {
+      series.notEnoughRecentData = brokenByGap;
+      return series;
     }
-    if (series.measuredPercentPerHour > 0) {
-      series.projectedCompletionTimestamp = lastPoint.x + (100 - lastPoint.y) / series.measuredPercentPerHour * 3600000;
+    series.measuredPercentPerHour = measuredPercentPerHour;
+    series.paceMinutes = spanMilliseconds / 60000;
+    if (hoursLeft !== null) {
+      series.projectedPercentAtDeadline = Math.max(0, Math.min(100, lastPoint.y + measuredPercentPerHour * hoursLeft));
+    }
+    if (measuredPercentPerHour > 0) {
+      series.projectedCompletionTimestamp = lastPoint.x + (100 - lastPoint.y) / measuredPercentPerHour * 3600000;
     }
   }
   return series;
+}
+
+// A Major Order's progress samples: the shared history's, then the page's own.
+function getMajorOrderSamples(assignmentId) {
+  return mergeSampleLists(
+    asArray(apiData.sharedHistory?.majorOrderSamples).filter(sample => sample.assignmentId === assignmentId),
+    asArray(apiData.majorOrderHistory).filter(sample => sample.assignmentId === assignmentId));
 }
 
 // ── GRAPHS: DRAWING ──────────────────────────────────────────────────────────
@@ -4289,6 +4540,24 @@ function formatClockTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString(DISPLAY_LOCALE, { hour: '2-digit', minute: '2-digit' });
 }
 
+// A chart time: "17:05", or "Tue 17:05" when the chart spans most of a day or more.
+function formatChartTime(timestamp, spanMilliseconds) {
+  if (spanMilliseconds < 20 * 3600000) return formatClockTime(timestamp);
+  return new Date(timestamp).toLocaleString(DISPLAY_LOCALE, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// Splits a line's points wherever two samples are further apart than CHART_GAP_MILLISECONDS,
+// so a gap in the history shows as a break instead of a made-up straight line.
+function splitPointsAtGaps(points) {
+  const runs = [];
+  for (const point of points) {
+    const currentRun = runs[runs.length - 1];
+    if (currentRun && point.x - currentRun[currentRun.length - 1].x <= CHART_GAP_MILLISECONDS) currentRun.push(point);
+    else runs.push([point]);
+  }
+  return runs;
+}
+
 // How wide to draw charts: the viewport minus page padding, within limits,
 // so text inside the SVG stays readable on phones instead of shrinking.
 function getChartWidth(maximumWidth = 760) {
@@ -4315,6 +4584,7 @@ function buildLineChart({ title, series, yDomain, formatY, width = getChartWidth
   const xDomain = [Math.min(...allTimes, ...referenceLines.flatMap(line => line.points.map(point => point.x))),
                    Math.max(...allTimes, ...referenceLines.flatMap(line => line.points.map(point => point.x)))];
   const xOf = time => scaleValue(time, xDomain[0], xDomain[1], margin.left, width - margin.right);
+  const formatTime = time => formatChartTime(time, xDomain[1] - xDomain[0]);
   const yOf = value => scaleValue(value, yDomain[0], yDomain[1], height - margin.bottom, margin.top);
 
   const svg = createSvgElement('svg', {
@@ -4332,9 +4602,9 @@ function buildLineChart({ title, series, yDomain, formatY, width = getChartWidth
       [document.createTextNode(formatY(gridValue))]));
   }
   // time axis: first and last time
-  svg.append(createSvgElement('text', { class: 'chart-axis-label', x: margin.left, y: height - 6 }, [document.createTextNode(formatClockTime(xDomain[0]))]));
+  svg.append(createSvgElement('text', { class: 'chart-axis-label', x: margin.left, y: height - 6 }, [document.createTextNode(formatTime(xDomain[0]))]));
   svg.append(createSvgElement('text', { class: 'chart-axis-label', x: width - margin.right, y: height - 6, 'text-anchor': 'end' },
-    [document.createTextNode(formatClockTime(xDomain[1]))]));
+    [document.createTextNode(formatTime(xDomain[1]))]));
 
   for (const referenceLine of referenceLines) {
     svg.append(createSvgElement('polyline', {
@@ -4350,10 +4620,15 @@ function buildLineChart({ title, series, yDomain, formatY, width = getChartWidth
     position === otherPosition || Math.abs(endY - otherY) >= 14));
   for (const line of series) {
     if (line.points.length === 0) continue;
-    svg.append(createSvgElement('polyline', {
-      class: `chart-line ${line.className}`,
-      points: line.points.map(point => `${xOf(point.x)},${yOf(point.y)}`).join(' '),
-    }));
+    for (const run of splitPointsAtGaps(line.points)) {
+      // a lone sample between two gaps still shows, as a dot
+      svg.append(run.length === 1
+        ? createSvgElement('circle', { class: `chart-lone-point ${line.className}`, cx: xOf(run[0].x), cy: yOf(run[0].y), r: 2 })
+        : createSvgElement('polyline', {
+          class: `chart-line ${line.className}`,
+          points: run.map(point => `${xOf(point.x)},${yOf(point.y)}`).join(' '),
+        }));
+    }
     const lastPoint = line.points[line.points.length - 1];
     svg.append(createSvgElement('circle', { class: `chart-end-dot ${line.className}`, cx: xOf(lastPoint.x), cy: yOf(lastPoint.y), r: 4 }));
     if (endLabelsFit) {
@@ -4380,7 +4655,7 @@ function buildLineChart({ title, series, yDomain, formatY, width = getChartWidth
       const point = line.points.find(candidate => candidate.x === time);
       return point ? `${line.label} ${formatY(point.y)}` : null;
     }).filter(Boolean);
-    readout.textContent = `${formatClockTime(time)} — ${values.join(' · ') || 'no value'}`;
+    readout.textContent = `${formatTime(time)} — ${values.join(' · ') || 'no value'}`;
   };
   svg.addEventListener('pointermove', event => {
     const bounds = svg.getBoundingClientRect();
@@ -4408,7 +4683,7 @@ function buildLineChart({ title, series, yDomain, formatY, width = getChartWidth
     ]) : null;
 
   const table = buildTable(`${title}: the numbers`, ['Time', ...series.map(line => line.label)],
-    allTimes.map(time => [formatClockTime(time), ...series.map(line => {
+    allTimes.map(time => [formatTime(time), ...series.map(line => {
       const point = line.points.find(candidate => candidate.x === time);
       return point ? formatY(point.y) : '—';
     })]));
@@ -4470,13 +4745,33 @@ function buildPressureChart(rows, width = getChartWidth()) {
   ]);
 }
 
+// The 1h / 6h / 24h / 7d buttons and where the history comes from, above the graphs.
+function buildGraphRangeControls() {
+  const buttons = GRAPH_RANGES.map(range => {
+    const button = buildElement('button', {
+      className: 'graph-range-button', text: range.label,
+      attributes: { type: 'button', 'aria-pressed': String(range.hours === graphRangeHours), 'data-graph-range': range.hours },
+    });
+    button.addEventListener('click', () => changeGraphRange(range.hours));
+    return button;
+  });
+  return buildElement('div', { className: 'graph-controls' }, [
+    buildElement('div', { className: 'graph-range', attributes: { role: 'group', 'aria-label': 'Time range of the graphs' } }, buttons),
+    buildElement('p', { className: 'section-hint graph-history-source', text:
+      `${describeHistorySource()}. `
+      + (apiData.sharedHistoryStatus === 'loaded'
+        ? 'The long ranges come from a war record the site keeps every 15 minutes; breaks in a line are gaps in it.'
+        : 'This browser only remembers the last 45 minutes, so the long ranges fill in once the shared history loads.') }),
+  ]);
+}
+
 // Everything the graphs section shows → #output-graphs
 function renderTrendGraphs() {
   if (!hasAnyData()) {
     replaceContent('output-graphs', [buildWaitingMessage()]);
     return;
   }
-  const blocks = [];
+  const blocks = [buildGraphRangeControls()];
 
   // 1. Major Order progress against time left
   blocks.push(buildElement('h3', { text: 'Major Order progress against time left' }));
@@ -4495,43 +4790,50 @@ function renderTrendGraphs() {
         blocks.push(buildStatusLine({ status: 'good', icon: '✔', text: `${taskSeries.sentence}: done.` }));
         return;
       }
-      if (!taskSeries.ready) {
-        blocks.push(buildMeasuringMessage(taskSeries, `"${taskSeries.sentence}"`));
+      const visiblePoints = keepPointsInRange(taskSeries.points);
+      const visibleReadiness = describeHistoryReadiness(visiblePoints.map(point => point.x));
+      if (!visibleReadiness.ready) {
+        blocks.push(buildMeasuringMessage(visibleReadiness, `"${taskSeries.sentence}"`));
         return;
       }
-      const lastPoint = taskSeries.points[taskSeries.points.length - 1];
+      const lastPoint = visiblePoints[visiblePoints.length - 1];
+      const hasPace = taskSeries.measuredPercentPerHour !== null;
       const referenceLines = taskSeries.deadlineTimestamp ? [
         { label: 'Pace needed to finish by the deadline', className: 'reference-needed',
           points: [lastPoint, { x: taskSeries.deadlineTimestamp, y: 100 }] },
-        { label: 'Current pace, projected', className: 'reference-projected',
+        hasPace ? { label: 'Current pace, projected', className: 'reference-projected',
           // stops where it reaches 100% if that happens before the deadline
           points: [lastPoint, taskSeries.projectedCompletionTimestamp !== null && taskSeries.projectedCompletionTimestamp < taskSeries.deadlineTimestamp
             ? { x: taskSeries.projectedCompletionTimestamp, y: 100 }
-            : { x: taskSeries.deadlineTimestamp, y: taskSeries.projectedPercentAtDeadline }] },
-      ] : [];
+            : { x: taskSeries.deadlineTimestamp, y: taskSeries.projectedPercentAtDeadline ?? lastPoint.y }] } : null,
+      ].filter(Boolean) : [];
       blocks.push(buildLineChart({
         title: taskSeries.sentence,
-        series: [{ label: 'Progress', className: 'series-progress', points: taskSeries.points }],
+        series: [{ label: 'Progress', className: 'series-progress', points: visiblePoints }],
         referenceLines,
         yDomain: [0, 100],
         formatY: value => formatPercent(value),
       }));
-      blocks.push(buildElement('p', { className: 'section-hint', text:
-        `Measured pace ${formatPercentPerHour(taskSeries.measuredPercentPerHour)}, needed ${formatPercentPerHour(taskSeries.requiredPercentPerHour)}; `
-        + `at this pace it reaches about ${formatPercent(taskSeries.projectedPercentAtDeadline, 0)} by the deadline. An estimate from ${Math.round(taskSeries.minutesWatched)} minutes of watching.` }));
+      blocks.push(buildElement('p', { className: 'section-hint', text: hasPace
+        ? `Measured pace ${formatPercentPerHour(taskSeries.measuredPercentPerHour)}, needed ${formatPercentPerHour(taskSeries.requiredPercentPerHour)}; `
+          + `at this pace it reaches about ${formatPercent(taskSeries.projectedPercentAtDeadline, 0)} by the deadline. An estimate from the last ${Math.round(taskSeries.paceMinutes)} minutes.`
+        : `Needed pace ${formatPercentPerHour(taskSeries.requiredPercentPerHour)}. Not enough recent data for the current pace yet.` }));
     });
   }
 
   // 2. Helldivers per front over time
   blocks.push(buildElement('h3', { text: 'Helldivers per front' }));
   const fronts = buildFrontPlayerSeries();
-  if (!fronts.ready) {
-    blocks.push(buildMeasuringMessage(fronts, 'player counts'));
+  const visibleFronts = fronts.series.map(line => ({ ...line, points: keepPointsInRange(line.points) }))
+    .filter(line => line.points.length > 0);
+  const visibleFrontReadiness = describeHistoryReadiness(visibleFronts.flatMap(line => line.points.map(point => point.x)));
+  if (!visibleFrontReadiness.ready) {
+    blocks.push(buildMeasuringMessage(visibleFrontReadiness, 'player counts'));
   } else {
-    const allPlayerCounts = fronts.series.flatMap(line => line.points.map(point => point.y));
+    const allPlayerCounts = visibleFronts.flatMap(line => line.points.map(point => point.y));
     blocks.push(buildLineChart({
       title: 'Helldivers on active campaigns, per front',
-      series: fronts.series.map(line => ({ label: getFactionDisplayName(line.factionKey), className: `series-${line.factionKey}`, points: line.points })),
+      series: visibleFronts.map(line => ({ label: getFactionDisplayName(line.factionKey), className: `series-${line.factionKey}`, points: line.points })),
       yDomain: fitValueDomain(allPlayerCounts, 100, 0),
       formatY: value => formatBigNumber(value),
     }));
@@ -4552,13 +4854,16 @@ function renderTrendGraphs() {
   }
 
   // 4. Liberation (or defense) over the remembered window, one small chart per planet
-  blocks.push(buildElement('h3', { text: 'Progress on each planet, last 45 minutes' }));
+  blocks.push(buildElement('h3', { text: 'Progress on each planet (its current fight)' }));
   const planetCharts = [];
   const stillMeasuring = [];
   for (const planetIndex of apiData.indexesOfPlanetsWithActiveBattles) {
     const planet = apiData.planetsByIndex[planetIndex];
     if (!planet) continue;
-    const progress = buildPlanetProgressSeries(apiData.planetHistoryByIndex[planetIndex]);
+    const allProgress = buildPlanetProgressSeries(getPlanetSamples(planet));
+    const visibleProgressPoints = keepPointsInRange(allProgress.points);
+    const progress = { ...allProgress, points: visibleProgressPoints,
+      ...describeHistoryReadiness(visibleProgressPoints.map(point => point.x)) };
     if (!progress.ready) {
       stillMeasuring.push({ planet, progress });
       continue;
@@ -6269,9 +6574,11 @@ function getSecondsUntilNextRefresh(nowTimestamp = Date.now()) {
   return Math.max(0, Math.ceil((nextRefreshDueTimestamp - nowTimestamp) / 1000));
 }
 
-// Once a second: updates the countdown and the data age, and refreshes when due.
+// Once a second: updates the countdown and the data age, and refreshes when due
+// (the war feeds every minute, the shared history every 10 minutes).
 function tickCountdown() {
   if (getSecondsUntilNextRefresh() <= 0 && !refreshInProgress) refreshEverythingNow();
+  refreshSharedHistoryWhenDue();
   putTextInElement('countdown-text', describeCountdown());
   renderStatusBar();
 }
@@ -6324,6 +6631,7 @@ function startApp() {
   renderEverything();
   scheduleNextRefresh();
   refreshEverythingNow();
+  refreshSharedHistory();
   startCountdownTimer();
 }
 

@@ -21,7 +21,8 @@ Google Gemini key for AI summaries) are kept only in your own browser.
 Every 15 minutes a GitHub Action in this repository records the war (planet progress, players
 per front, Major Order progress and events such as planets liberated or lost) into
 `history.json` on the [`war-history`](https://github.com/MrHamster112/DropIntel/tree/war-history)
-branch. It keeps two weeks. The page doesn't use it yet.
+branch. It keeps two weeks. The page loads it, so trends, ETAs and graphs (up to 7 days) work
+from the first minute instead of after a few minutes of watching.
 
 ## Support
 
@@ -38,7 +39,8 @@ Claude, an AI assistant made by Anthropic.
 Unofficial fan project, not affiliated with or endorsed by Arrowhead Game Studios or Sony
 Interactive Entertainment. HELLDIVERS™ 2 is their trademark. The planet landscapes are drawn by
 the page itself. Faction logos © Arrowhead Game Studios, as traced by Helldivers Wiki contributors.
-War data from the community APIs at api.helldivers2.dev and helldiverstrainingmanual.com.
+War data from the community APIs at api.helldivers2.dev and helldiverstrainingmanual.com, and
+from this repository's own war history.
 
 ## Major Orders can be wrong
 
