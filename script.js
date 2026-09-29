@@ -3056,7 +3056,9 @@ function rankLiberationCampaigns(nowTimestamp = Date.now()) {
     if (outlook.verdict === 'winning') {
       score += 200;
       if (outlook.hoursToLiberation !== null && outlook.hoursToLiberation < 6) score += 100;
-      reasons.push(`Liberation in about ${formatDuration(outlook.hoursToLiberation * 3600)} at this pace`);
+      if (outlook.hoursToLiberation !== null && outlook.hoursToLiberation <= ETA_LONGEST_HOURS) {
+        reasons.push(`Liberation in about ${formatDuration(outlook.hoursToLiberation * 3600)} at this pace`);
+      }
     } else if (outlook.verdict === 'stalled') {
       score -= 100;
       reasons.push('Stalled: enemy regeneration is keeping up');
@@ -3522,7 +3524,7 @@ function renderEverything() {
     renderSimpleLatestDispatch,
     renderWarMap, renderGambits, renderWarStatistics, renderTrendGraphs, renderAssignmentsInFull, renderCampaigns, renderDefenseEvents,
     renderPlanets, renderPlanetEffects, renderSpaceStation, renderNewsDispatches, renderRawData,
-    renderPlanetJumpOptions, renderPlanetDrawer,
+    renderPlanetJumpOptions, renderPlanetDrawer, openPlanetFromLinkWhenKnown,
     renderStatusBar,
   ];
   for (const renderer of renderers) {
@@ -3679,7 +3681,12 @@ function renderSimpleDropTargets() {
     replaceContent('simple-drop-targets', [buildWaitingMessage()]);
     return;
   }
-  const ranked = rankLiberationCampaigns().slice(0, SIMPLE_MODE_DROP_TARGET_COUNT);
+  const ranked = orderByMyFront(rankLiberationCampaigns()).slice(0, SIMPLE_MODE_DROP_TARGET_COUNT);
+  const frontNote = document.getElementById('drop-targets-front-note');
+  if (frontNote) {
+    frontNote.hidden = myFront === 'all';
+    frontNote.textContent = myFront === 'all' ? '' : `Your front, the ${getFactionDisplayName(myFront)}, comes first (change it in Settings).`;
+  }
   if (ranked.length === 0) {
     replaceContent('simple-drop-targets', [buildElement('p', {
       className: 'empty-state', text: 'No liberation campaigns are open right now.' })]);
@@ -3688,7 +3695,8 @@ function renderSimpleDropTargets() {
   replaceContent('simple-drop-targets', ranked.map(entry => buildPlanetCard(entry.planet, {
     idPrefix: 'simple-drop',
     liberationOutlook: entry.outlook,
-    reasons: entry.reasons.slice(0, 2),
+    reasons: [myFront !== 'all' && getEnemyFactionOnPlanet(entry.planet) === myFront ? 'Your front' : null,
+      ...entry.reasons].filter(Boolean).slice(0, 2),
     isMajorOrderPlanet: entry.isMajorOrderPlanet,
     extraContent: [buildPlanetDrawerButton(entry.planet, `More about ${entry.planet.name}`, 'link-button planet-card-more')],
   })));
@@ -6369,6 +6377,10 @@ function buildPlanetDrawerBody(details) {
     guideEntry ? buildElement('button', { text: `Guide: ${guideEntry.name || guideEntry.title}`,
       attributes: { type: 'button', 'data-drawer-action': 'guide', 'data-guide-entry': details.guideEntryId, 'data-drawer-focus-key': 'guide' } }) : null,
   ]));
+  sections.push(buildElement('p', { className: 'section-hint' }, [
+    buildElement('a', { text: 'Link to this planet', attributes: { href: `#planet=${planet.index}`, 'data-drawer-focus-key': 'link' } }),
+    ' (copy it to share)',
+  ]));
   return sections;
 }
 
@@ -6405,6 +6417,7 @@ function openPlanetDrawer(planetIndex, { opener = null, moveFocus = true } = {})
   drawer.hidden = false;
   document.body.classList.add('has-planet-drawer');
   renderPlanetDrawer();
+  writePlanetToLocationHash(planetIndex);
   if (moveFocus) document.getElementById('planet-drawer-title').focus({ preventScroll: true });
   return true;
 }
@@ -6418,6 +6431,7 @@ function closePlanetDrawer({ returnFocus = true } = {}) {
   const opener = planetDrawerState.openerSelector ? document.querySelector(planetDrawerState.openerSelector) : null;
   planetDrawerState.planetIndex = null;
   planetDrawerState.openerSelector = null;
+  writePlanetToLocationHash(null);
   if (returnFocus && opener) opener.focus({ preventScroll: true });
 }
 
@@ -6574,7 +6588,8 @@ function jumpToPlanet(planetIndex) {
   return null;
 }
 
-// The jump form: finds the best match for what was typed and goes there.
+// The header's Find a planet form: finds the best match for what was typed and opens its
+// details in the planet drawer, from any view. Returns the drawer, or null.
 function handlePlanetJumpSubmit(event) {
   if (event) event.preventDefault();
   const input = document.getElementById('planet-jump-input');
@@ -6585,9 +6600,9 @@ function handlePlanetJumpSubmit(event) {
     putTextInElement('planet-jump-status', query.trim() ? `No planet called "${query.trim()}".` : 'Type a planet name first.');
     return null;
   }
-  const landedOn = jumpToPlanet(target.index);
-  putTextInElement('planet-jump-status', landedOn ? `Showing ${target.name}.` : `${target.name} has no section on this page.`);
-  return landedOn;
+  const opened = openPlanetDrawer(target.index, { opener: input });
+  putTextInElement('planet-jump-status', opened ? `Showing ${target.name}.` : `${target.name} isn't in the feeds yet.`);
+  return opened ? document.getElementById('planet-drawer') : null;
 }
 
 // Fills the jump box's suggestions: planets in battle first, then the rest.
@@ -6909,6 +6924,136 @@ function applySiteEmblem() {
   if (emblem && emblemPath) emblem.setAttribute('src', encodeURI(emblemPath));
 }
 
+// ── SETTINGS AND LINKS ───────────────────────────────────────────────────────
+// The header's Settings panel (data source, "My front", the Gemini key) and links into the
+// page: #planet=Heeth, #view=advanced, #section=graphs, #guide=faction-automaton. The old
+// storage keys (hd2_server_preference, hd2_llm_api_key, hd2_llm_model) are unchanged, so moving
+// the controls lost nobody's settings.
+
+const MY_FRONT_STORAGE_KEY = 'hd2_my_front';
+const MY_FRONT_CHOICES = ['all', 'terminids', 'automaton', 'illuminate'];
+
+// The remembered "My front", or 'all' when nothing valid is stored.
+function readMyFront() {
+  const stored = readStoredValue(MY_FRONT_STORAGE_KEY);
+  return MY_FRONT_CHOICES.includes(stored) ? stored : 'all';
+}
+
+let myFront = readMyFront();
+
+// Called by the My front select: remembers the front and re-ranks Where to drop.
+function changeMyFront(front) {
+  if (!MY_FRONT_CHOICES.includes(front)) return;
+  myFront = front;
+  writeStoredValue(MY_FRONT_STORAGE_KEY, front);
+  renderSimpleDropTargets();
+}
+
+// Ranked liberation campaigns with the chosen front's planets first, each list keeping its
+// own order (the Major Order still leads within a front).
+function orderByMyFront(rankedEntries, front = myFront) {
+  if (front === 'all') return rankedEntries;
+  const onMyFront = rankedEntries.filter(entry => getEnemyFactionOnPlanet(entry.planet) === front);
+  return [...onMyFront, ...rankedEntries.filter(entry => !onMyFront.includes(entry))];
+}
+
+// Opens the Settings panel and focuses one of its controls (e.g. the Gemini key box).
+function openSettings(focusElementId) {
+  const panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  panel.open = true;
+  const target = focusElementId ? document.getElementById(focusElementId) : null;
+  const nestedDetails = target ? target.closest('details:not(#settings-panel)') : null;
+  if (nestedDetails) nestedDetails.open = true;
+  focusAndReveal(target || panel.querySelector('summary'));
+}
+
+// Reads a #key=value&key=value link into { planet, view, section, guide } (missing keys are null).
+function parseLocationHash(hash) {
+  const parameters = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+  return {
+    planet: parameters.get('planet'),
+    view: parameters.get('view'),
+    section: parameters.get('section'),
+    guide: parameters.get('guide'),
+  };
+}
+
+// A planet from a link: its index, or its name (exact first, then the best partial match).
+function findPlanetFromLink(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  if (/^\d+$/.test(text) && apiData.planetsByIndex[Number(text)]) return apiData.planetsByIndex[Number(text)];
+  return apiData.planets.find(planet => planet.name.toLowerCase() === text.toLowerCase())
+    || findPlanetsMatching(text, 1)[0] || null;
+}
+
+// An advanced section from a link: "graphs", "raw-data", or a menu label such as "DSS".
+function findSectionFromLink(value) {
+  const wanted = String(value || '').trim().toLowerCase();
+  if (!wanted) return null;
+  const link = [...document.querySelectorAll('.section-nav a[data-section]')].find(candidate =>
+    candidate.dataset.section === `advanced-section-${wanted}` || candidate.textContent.trim().toLowerCase() === wanted);
+  return link ? document.getElementById(link.dataset.section) : null;
+}
+
+let pendingPlanetFromLink = null;
+
+// Follows the link in the address bar: a view, a section, a guide entry, and a planet (which
+// waits for the first data when it isn't known yet).
+function applyLocationHash(hash = window.location.hash) {
+  const link = parseLocationHash(hash);
+  if (link.view && VIEW_MODES.includes(link.view)) changeViewMode(link.view);
+  if (link.section) {
+    const section = findSectionFromLink(link.section);
+    if (section) {
+      changeViewMode('advanced');
+      setSectionCollapsed(section.id, false);
+      focusAndReveal(section);
+    }
+  }
+  if (link.guide && findGuideEntry(getGuideData(), link.guide)) showGuideEntry(link.guide);
+  pendingPlanetFromLink = link.planet;
+  openPlanetFromLinkWhenKnown();
+}
+
+// Opens the drawer on the planet a link names, once the planets are in (called after renders).
+function openPlanetFromLinkWhenKnown() {
+  if (!pendingPlanetFromLink || apiData.planets.length === 0) return;
+  const planet = findPlanetFromLink(pendingPlanetFromLink);
+  pendingPlanetFromLink = null;
+  if (planet) openPlanetDrawer(planet.index);
+}
+
+// Puts "#planet=N" in the address bar while the drawer shows a planet (so the link can be
+// shared), and takes it out when the drawer closes, without adding history entries.
+function writePlanetToLocationHash(planetIndex) {
+  if (typeof history === 'undefined' || typeof history.replaceState !== 'function') return;
+  const current = parseLocationHash(window.location.hash);
+  if (planetIndex === null && current.planet === null) return;
+  const hash = planetIndex === null ? '' : `#planet=${planetIndex}`;
+  try {
+    history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`);
+  } catch {
+    // some file:// setups refuse replaceState; the link is a convenience, so carry on
+  }
+}
+
+// Wires the Settings panel and the address-bar links (called once from startApp).
+function wireSettingsAndLinks() {
+  const myFrontSelect = document.getElementById('my-front-select');
+  if (myFrontSelect) {
+    myFrontSelect.value = myFront;
+    myFrontSelect.addEventListener('change', () => changeMyFront(myFrontSelect.value));
+  }
+  document.addEventListener('click', event => {
+    const settingsButton = event.target.closest && event.target.closest('[data-open-settings]');
+    if (settingsButton) openSettings(settingsButton.dataset.openSettings);
+  });
+  window.addEventListener('hashchange', () => applyLocationHash());
+  applyLocationHash();
+}
+
 // ── REFRESH LOOP ─────────────────────────────────────────────────────────────
 
 let lastRefreshStartedTimestamp = 0;
@@ -7012,6 +7157,8 @@ function startApp() {
   applyViewMode();
   renderGuide();
   renderEverything();
+  // after the first render, so a link to a section or guide entry has something to show
+  wireSettingsAndLinks();
   scheduleNextRefresh();
   refreshEverythingNow();
   refreshSharedHistory();

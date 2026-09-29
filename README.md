@@ -13,8 +13,9 @@ next, a galactic war map, gambit analysis per front and a field guide.
   connection; the field guide works without one. The Major Order in a downloaded copy can be
   worded wrong (see below).
 
-The page refreshes itself every minute. Settings (view mode, folded sections, and an optional
-Google Gemini key for AI summaries) are kept only in your own browser.
+The page refreshes itself every minute. Settings (view mode, folded sections, your front, and an
+optional Google Gemini key for AI summaries) are kept only in your own browser. Links can point
+at a planet, for example `https://mrhamster112.github.io/DropIntel/#planet=Heeth`.
 
 ## War history
 

@@ -356,6 +356,7 @@ export function addSnapshot(history, snapshot) {
       segment = { ...identity, samples: [] };
       planet.segments.push(segment);
     }
+    segment.source = snapshot.source;
     segment.endsAt = battle.endsAt;
     segment.samples.push([time, battle.health, battle.players, roundRate(battle.regenPerSecond), battle.backupApiPercent ?? null]);
   }
@@ -374,6 +375,8 @@ export function addSnapshot(history, snapshot) {
 
   history.updatedAt = time;
   history.source = snapshot.source;
+  // a file written by an older collector keeps its old field list otherwise
+  history.fields = SAMPLE_FIELDS;
   history.season = season;
   return events;
 }

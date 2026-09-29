@@ -935,3 +935,30 @@ input[type="search"] {
 .mo-task-pace .verdict { margin: 0; }
 .mo-task-pace-facts { margin: 0; color: var(--text-muted); font-size: 0.85rem; }
 .planet-card-more { margin-top: 4px; }
+
+/* ── SETTINGS PANEL (header) ──────────────────────────────────────────────── */
+
+.settings-panel {
+  flex-basis: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.settings-panel > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-weight: 700;
+  min-height: 32px;
+}
+.settings-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0 4px;
+  max-width: 900px;
+}
+.settings-body .server-choice,
+.my-front-choice { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.9rem; max-width: 100%; justify-self: start; }
+.settings-body select { min-width: 0; max-width: 100%; flex: 1 1 auto; }
+.settings-body .section-hint, .settings-links { margin: 0; }
+.settings-body .llm-settings { margin-top: 0; }
+.llm-settings-pointer { margin: 12px 0 0; }

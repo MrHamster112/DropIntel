@@ -6,6 +6,16 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="DropIntel, a fan-made war tracker for Helldivers 2: the Major Order, planets that need you, and defenses at risk." />
   <title>DropIntel · a fan-made war tracker for Helldivers 2</title>
+  <!-- Link previews (Discord, social sites) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="DropIntel" />
+  <meta property="og:title" content="DropIntel · a fan-made war tracker for Helldivers 2" />
+  <meta property="og:description" content="The Major Order and its pace, planets under attack, where to drop next, a galactic war map and gambits per front. Free, unofficial, updated every minute." />
+  <meta property="og:url" content="https://mrhamster112.github.io/DropIntel/" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="DropIntel · a fan-made war tracker for Helldivers 2" />
+  <meta name="twitter:description" content="The Major Order and its pace, planets under attack, where to drop next, a galactic war map and gambits per front." />
+  <meta name="theme-color" content="#f5c518" />
   <link rel="stylesheet" href="style.css">
   <script src="guide-data.js" defer></script>
   <script src="major-order-fixes.js" defer></script>
@@ -33,15 +43,64 @@
     <div class="refresh-controls">
       <button type="button" id="refresh-button" class="refresh-button">Refresh now</button>
       <span class="countdown" id="countdown-text">Next refresh in 60s</span>
-      <label class="server-choice advanced-only" hidden>Data source
+    </div>
+
+    <form id="planet-jump-form" class="planet-jump" role="search">
+      <label><span class="planet-jump-label">Find a planet</span>
+        <input type="text" id="planet-jump-input" list="planet-jump-options" autocomplete="off" placeholder="Find a planet…">
+      </label>
+      <datalist id="planet-jump-options"></datalist>
+      <button type="submit">Show</button>
+      <span id="planet-jump-status" class="section-hint" aria-live="polite"></span>
+    </form>
+  </div>
+
+  <details id="settings-panel" class="settings-panel">
+    <summary>Settings</summary>
+    <div class="settings-body">
+      <label class="server-choice">Data source
         <select id="server-select">
           <option value="auto">Auto (primary, backup if it fails)</option>
           <option value="live">Primary only (api.helldivers2.dev)</option>
           <option value="backup">Backup only (helldiverstrainingmanual.com)</option>
         </select>
       </label>
+      <label class="my-front-choice">My front
+        <select id="my-front-select">
+          <option value="all">All fronts</option>
+          <option value="terminids">Terminids</option>
+          <option value="automaton">Automatons</option>
+          <option value="illuminate">Illuminate</option>
+        </select>
+      </label>
+      <p class="section-hint">"My front" puts that front's planets first in Where to drop. Settings stay in this browser only.</p>
+      <p class="settings-links"><a href="#section=raw-data">Raw data (advanced mode)</a></p>
+      <details class="llm-settings" id="llm-settings">
+        <summary>Optional: AI overview for bonus info, with your own Google Gemini key</summary>
+        <p>Off by default. The AI overview is bonus info on top of the gambit analysis in advanced mode. With a key, each front gets an "Ask Gemini" button that sends that front's analysis (its numbers and reasons) to Google's Gemini API and shows the reply, labelled as AI-written. On top of each overview the page adds a Major Order note, taken from the order itself: if the order wants another front right now, it says to focus there, and the normal overview of the front you asked about follows. The page's own analysis never depends on it.</p>
+        <ul class="llm-facts">
+          <li>Get a key at <a href="https://aistudio.google.com/apikey" rel="noopener noreferrer" target="_blank">aistudio.google.com/apikey</a>. Google's free tier has daily limits.</li>
+          <li>The key is kept in this browser's local storage, on this device only. It is sent to <code>generativelanguage.googleapis.com</code> and nowhere else, and only when you press an Ask button.</li>
+          <li>Anyone who can use this browser profile can read it. On a shared computer, use "Forget key" when you're done.</li>
+          <li>Nothing about you is sent, only public war numbers. On the free tier Google may use what is sent to improve its products.</li>
+          <li>AI text can be wrong or made up. Check it against the numbers on the page.</li>
+        </ul>
+        <form id="llm-settings-form" class="llm-settings-form" autocomplete="off">
+          <label>Gemini API key
+            <input type="password" id="llm-api-key" autocomplete="off" spellcheck="false" placeholder="Paste your key">
+          </label>
+          <label>Model
+            <input type="text" id="llm-model" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="llm-settings-buttons">
+            <button type="submit">Save</button>
+            <button type="button" id="llm-forget-key">Forget key</button>
+          </div>
+        </form>
+        <p id="llm-settings-status" class="section-hint" aria-live="polite"></p>
+      </details>
     </div>
-  </div>
+  </details>
 
   <div class="status-line">
     <p id="status-bar" class="status-bar" role="status" aria-live="polite">Loading…</p>
@@ -79,6 +138,7 @@
     <section class="panel" aria-labelledby="drop-heading">
       <h2 id="drop-heading">Where to drop</h2>
       <p class="section-hint">Ranked by the Major Order, how the fight is going, and where other Helldivers are.</p>
+      <p id="drop-targets-front-note" class="section-hint" hidden></p>
       <div id="simple-drop-targets" class="card-grid"></div>
     </section>
 
@@ -105,14 +165,6 @@
         <a href="#raw-data-heading" data-section="advanced-section-raw-data">Raw data</a>
       </nav>
       <div class="toolbar-row">
-        <form id="planet-jump-form" class="planet-jump" role="search">
-          <label><span class="planet-jump-label">Jump to planet</span>
-            <input type="text" id="planet-jump-input" list="planet-jump-options" autocomplete="off" placeholder="Jump to a planet…">
-          </label>
-          <datalist id="planet-jump-options"></datalist>
-          <button type="submit">Go</button>
-          <span id="planet-jump-status" class="section-hint" aria-live="polite"></span>
-        </form>
         <div class="toolbar-buttons">
           <button type="button" id="expand-all-sections">Expand all</button>
           <button type="button" id="collapse-all-sections">Collapse all</button>
@@ -137,30 +189,8 @@
         <p class="section-hint">Worked out in your browser from the numbers on this page, with fixed weights: every point a planet scores is listed with its reason. No network call is involved. It is an estimate, and it can't see what the game will do next. A <strong>gambit</strong> means ending an enemy attack by liberating the planet it comes from.</p>
         <div id="output-gambits" class="gambit-grid"></div>
         <p id="llm-announcer" class="visually-hidden" aria-live="polite"></p>
-        <details class="llm-settings" id="llm-settings">
-          <summary>Optional: AI overview for bonus info, with your own Google Gemini key</summary>
-          <p>Off by default. The AI overview is bonus info on top of the analysis above. With a key, each front gets an "Ask Gemini" button that sends that front's analysis (the numbers and reasons above) to Google's Gemini API and shows the reply, labelled as AI-written. On top of each overview the page adds a Major Order note, taken from the order itself: if the order wants another front right now, it says to focus there, and the normal overview of the front you asked about follows. The analysis above never depends on it.</p>
-          <ul class="llm-facts">
-            <li>Get a key at <a href="https://aistudio.google.com/apikey" rel="noopener noreferrer" target="_blank">aistudio.google.com/apikey</a>. Google's free tier has daily limits.</li>
-            <li>The key is kept in this browser's local storage, on this device only. It is sent to <code>generativelanguage.googleapis.com</code> and nowhere else, and only when you press an Ask button.</li>
-            <li>Anyone who can use this browser profile can read it. On a shared computer, use "Forget key" when you're done.</li>
-            <li>Nothing about you is sent, only public war numbers. On the free tier Google may use what is sent to improve its products.</li>
-            <li>AI text can be wrong or made up. Check it against the numbers above.</li>
-          </ul>
-          <form id="llm-settings-form" class="llm-settings-form" autocomplete="off">
-            <label>Gemini API key
-              <input type="password" id="llm-api-key" autocomplete="off" spellcheck="false" placeholder="Paste your key">
-            </label>
-            <label>Model
-              <input type="text" id="llm-model" autocomplete="off" spellcheck="false">
-            </label>
-            <div class="llm-settings-buttons">
-              <button type="submit">Save</button>
-              <button type="button" id="llm-forget-key">Forget key</button>
-            </div>
-          </form>
-          <p id="llm-settings-status" class="section-hint" aria-live="polite"></p>
-        </details>
+        <p class="section-hint llm-settings-pointer">Optional AI overview: add your own Google Gemini key in
+          <button type="button" class="link-button" data-open-settings="llm-api-key">Settings</button>.</p>
       </div>
     </section>
 
