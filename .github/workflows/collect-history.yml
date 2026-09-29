@@ -1,0 +1,56 @@
+# Records the Galactic War every 15 minutes into history.json on the "war-history" branch, which
+# only ever holds that one file in one commit (it is force-pushed; main is never touched).
+# Published from DropIntel-dev: edit it there, not here.
+name: Collect war history
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-history
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: github.repository == 'MrHamster112/DropIntel'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Get the saved history
+        run: |
+          mkdir -p war-history
+          if git fetch --quiet --depth 1 origin war-history; then
+            git show FETCH_HEAD:history.json > war-history/history.json || rm -f war-history/history.json
+          fi
+          if [ -f war-history/history.json ]; then cp war-history/history.json before.json; else touch before.json; fi
+
+      - name: Record the war
+        run: node tools/collect-history.mjs war-history/history.json
+
+      - name: Save it to the war-history branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f war-history/history.json ] || cmp -s before.json war-history/history.json; then
+            echo "Nothing new to save."
+            exit 0
+          fi
+          cd war-history
+          git init --quiet
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --quiet --orphan war-history
+          git add history.json
+          git commit --quiet -m "War history $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push --quiet --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" war-history

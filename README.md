@@ -16,6 +16,13 @@ next, a galactic war map, gambit analysis per front and a field guide.
 The page refreshes itself every minute. Settings (view mode, folded sections, and an optional
 Google Gemini key for AI summaries) are kept only in your own browser.
 
+## War history
+
+Every 15 minutes a GitHub Action in this repository records the war (planet progress, players
+per front, Major Order progress and events such as planets liberated or lost) into
+`history.json` on the [`war-history`](https://github.com/MrHamster112/DropIntel/tree/war-history)
+branch. It keeps two weeks. The page doesn't use it yet.
+
 ## Support
 
 DropIntel is free and has no ads. If it helps you between missions, you can buy me a coffee:
