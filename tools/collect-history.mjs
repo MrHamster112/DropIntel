@@ -1,10 +1,11 @@
 // Records the Galactic War for DropIntel's trends, one reading per run. The public repository's
 // GitHub Action (.github/workflows/collect-history.yml) runs it every 15 minutes and keeps the
-// result, history.json, on the orphan branch "war-history". Plain Node 22, no packages:
+// result, history.json, on the orphan branch "war-history", with latest-raw.json beside it (see
+// RAW DETAILS). Plain Node 22, no packages:
 //   node tools/collect-history.mjs history.json
 // A missing or broken file starts a fresh history. When both APIs fail, the file is left alone.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PRIMARY_API = 'https://api.helldivers2.dev';
@@ -504,6 +505,42 @@ export function pruneHistory(history, now, limits = HISTORY_LIMITS) {
   return history;
 }
 
+// ── RAW DETAILS ──────────────────────────────────────────────────────────────
+// A copy of what ArrowHead itself sends about the orders and the war, saved next to the history as
+// latest-raw.json (newest only). The community API's /raw endpoints pass ArrowHead's data through
+// untouched, so fields its /v1 feeds leave out show up here: the game's Galactic Campaigns (the
+// "Active Campaign" screen since patch 6.3) are not in /v1/assignments, whose title is only
+// "MAJOR ORDER". Lists longer than RAW_LIST_KEEP_LIMIT (every planet) are cut down to their length
+// and one example, so the file stays small.
+
+const RAW_LIST_KEEP_LIMIT = 40;
+const RAW_DETAILS_FILE_NAME = 'latest-raw.json';
+
+// A copy of a value with every long list replaced by { items, example }.
+export function summarizeLongLists(value) {
+  if (Array.isArray(value)) {
+    if (value.length > RAW_LIST_KEEP_LIMIT) return { items: value.length, example: summarizeLongLists(value[0]) };
+    return value.map(summarizeLongLists);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, summarizeLongLists(entry)]));
+  }
+  return value;
+}
+
+// Downloads ArrowHead's raw orders, war status and war info for a war season. It first waits one
+// rate-limit window, so these three requests never share a window with the reading's own five.
+// A part that fails is null; it never throws.
+export async function downloadRawDetails(season, options = {}, takenAt = nowInSeconds()) {
+  await (options.wait ?? sleep)(RATE_LIMIT_WINDOW_MILLISECONDS);
+  const primaryOptions = { ...options, headers: PRIMARY_HEADERS };
+  const raw = `${PRIMARY_API}/raw/api`;
+  const assignments = await downloadOptionalJson(`${raw}/v2/Assignment/War/${season}`, primaryOptions);
+  const status = await downloadOptionalJson(`${raw}/WarSeason/${season}/Status`, primaryOptions);
+  const warInfo = await downloadOptionalJson(`${raw}/WarSeason/${season}/WarInfo`, primaryOptions);
+  return summarizeLongLists({ takenAt, season, assignments, status, warInfo });
+}
+
 // ── ONE RUN ──────────────────────────────────────────────────────────────────
 
 // Takes one reading (primary, else backup) and adds it to the history.
@@ -538,6 +575,12 @@ async function main() {
   writeFileSync(path, JSON.stringify(history));
   console.log(`${snapshot.source}: ${snapshot.battles.length} battles, ${events.length} new events, `
     + `${Object.keys(history.planets).length} planets kept, ${Buffer.byteLength(JSON.stringify(history))} bytes.`);
+  // only the primary API has the raw feeds; a failure here never touches history.json
+  const season = snapshot.season ?? history.season;
+  if (snapshot.source === 'PRIMARY' && Number.isInteger(season)) {
+    const rawDetails = await downloadRawDetails(season).catch(() => null);
+    if (rawDetails) writeFileSync(join(dirname(path), RAW_DETAILS_FILE_NAME), JSON.stringify(rawDetails, null, 1));
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
