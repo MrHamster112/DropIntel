@@ -379,7 +379,7 @@
       <p id="guide-version" class="section-hint"></p>
       <div class="section-controls">
         <label>Search
-          <input type="search" id="guide-search" placeholder="e.g. charger, smoke, eagle" autocomplete="off">
+          <input type="search" id="guide-search" placeholder="Search every block: charger, smoke, eagle…" autocomplete="off">
         </label>
         <label>Front
           <select id="guide-faction-filter">
@@ -391,13 +391,7 @@
         </label>
         <span id="guide-match-count" class="section-hint" aria-live="polite"></span>
       </div>
-      <nav class="section-nav" aria-label="Guide sections">
-        <a href="#guide-factions">Factions</a>
-        <a href="#guide-stratagems">Stratagems</a>
-        <a href="#guide-armour-passives">Armour passives</a>
-        <a href="#guide-ship-modules">Ship modules</a>
-        <a href="#guide-mechanics">Mechanics</a>
-      </nav>
+      <div id="guide-tabs" class="guide-tabs" role="group" aria-label="Guide blocks"></div>
     </section>
     <div id="guide-content" class="view"></div>
   </div>

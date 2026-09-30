@@ -6,6 +6,13 @@
 // without touching script.js. It is a plain script (not JSON) because browsers
 // refuse to fetch() local files when index.html is opened from disk.
 //
+// The guide is split into blocks, each with groups inside (see GUIDE_BLOCKS in script.js):
+//   Enemies, Fronts and Loadouts, each by faction; Armour perks by armour weight; Guns by gun
+//   type; Stratagems by stratagem type; Game mechanics by topic (the galactic map, missions,
+//   combat, your ship). Each list below says which field puts an entry in its group, and
+//   `groups` lists the groups in reading order. A group with no entries says "Nothing written
+//   here yet" on the page.
+//
 // Rules for editing:
 // - Write in your own words. Never paste wiki text.
 // - Every entry needs an id (unique across the whole file), a confidence
@@ -14,13 +21,14 @@
 // - Numbers change with balance patches. When you re-check an entry against
 //   the current patch, raise its confidence and update gameVersion below.
 // - pairsWith / loadout ids must point at entries that exist (a test checks).
+// - faction is 'terminids', 'automaton' or 'illuminate'.
 //
 // confidence: high = well established and unlikely to have changed;
 //             medium = right in spirit, exact numbers may have moved;
 //             low = known to have been rebalanced since, check in game.
 
 const GUIDE_DATA = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   lastEdited: '2026-09-27',
   // What the content was written against. The game has moved on since; see below.
   gameVersion: '1.003-era (2025 patches)',
@@ -50,14 +58,121 @@ const GUIDE_DATA = {
         'https://games.gg/helldivers-2/guides/helldivers-2-armor-passives-guide/',
       ],
     },
+    {
+      id: 'owner',
+      label: 'The site owner\'s own experience in game, checked in the current patch.',
+      urls: [],
+    },
   ],
 
-  // ── FACTIONS ───────────────────────────────────────────────────────────────
-  // key matches script.js faction keys; icon must exist in images/faction-icons.
-  factions: [
+  // ── HOW THE GUIDE IS SPLIT ─────────────────────────────────────────────────
+  // The groups inside each block, in reading order (the three factions are fixed). To add a
+  // group, add a line; entries join it through the field named in each list's comment below.
+  groups: {
+    armourWeights: [
+      { key: 'light', label: 'Light armour' },
+      { key: 'medium', label: 'Medium armour' },
+      { key: 'heavy', label: 'Heavy armour' },
+    ],
+    gunTypes: [
+      { key: 'assault-rifle', label: 'Assault rifles' },
+      { key: 'marksman-rifle', label: 'Marksman rifles' },
+      { key: 'submachine-gun', label: 'Submachine guns' },
+      { key: 'shotgun', label: 'Shotguns' },
+      { key: 'explosive', label: 'Explosive primaries' },
+      { key: 'energy', label: 'Energy weapons' },
+      { key: 'special-primary', label: 'Special primaries' },
+      { key: 'pistol', label: 'Pistols' },
+      { key: 'special-secondary', label: 'Special secondaries' },
+    ],
+    stratagemTypes: [
+      { key: 'Orbital', label: 'Orbital strikes' },
+      { key: 'Eagle', label: 'Eagle strikes' },
+      { key: 'Support weapon', label: 'Support weapons' },
+      { key: 'Backpack', label: 'Backpacks' },
+      { key: 'Sentry', label: 'Sentries' },
+      { key: 'Emplacement', label: 'Emplacements and mines' },
+      { key: 'Vehicle', label: 'Vehicles' },
+    ],
+    mechanicTopics: [
+      { key: 'galactic-map', label: 'The galactic map' },
+      { key: 'mission', label: 'Missions' },
+      { key: 'combat', label: 'Combat and damage' },
+      { key: 'ship', label: 'Your Super Destroyer' },
+    ],
+  },
+
+  // ── ENEMIES (by faction) ───────────────────────────────────────────────────
+  // faction: whose enemy it is. summary: what it is (optional). howToKill: how to deal with it.
+  enemies: [
+    {
+      id: 'enemy-hunters-and-stalkers', faction: 'terminids', name: 'Hunters and Stalkers',
+      howToKill: 'Fast chasers; kill them first, they slow you and pin you for the swarm.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-chargers', faction: 'terminids', name: 'Chargers',
+      howToKill: 'Dodge, then hit the unarmoured back or legs; anti-tank on the head.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-bile-spewers', faction: 'terminids', name: 'Bile Spewers',
+      howToKill: 'Medium armour; autocannon, grenades or explosives to the sacs.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-bile-titans', faction: 'terminids', name: 'Bile Titans',
+      howToKill: 'Recoilless Rifle, Quasar Cannon, Railcannon or a 500kg bomb.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-devastators', faction: 'automaton', name: 'Devastators',
+      howToKill: 'Headshots with a medium-penetration primary, or an autocannon.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-hulks', faction: 'automaton', name: 'Hulks',
+      howToKill: 'Anti-tank to the eye, or shoot the vents on the back.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-tanks-and-cannon-towers', faction: 'automaton', name: 'Tanks and Cannon Towers',
+      howToKill: 'Anti-tank or a 500kg bomb to the rear vent.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-gunships', faction: 'automaton', name: 'Gunships',
+      howToKill: 'Shoot the engines with an autocannon, anti-materiel rifle or Spear.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-watchers', faction: 'illuminate', name: 'Watchers',
+      howToKill: 'Any hitscan weapon as soon as they appear.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-voteless', faction: 'illuminate', name: 'Voteless hordes',
+      howToKill: 'Machine gun, flamethrower or a gas or cluster stratagem.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-harvesters', faction: 'illuminate', name: 'Harvesters',
+      howToKill: 'Drop the shield, then anti-tank on the leg joints.',
+      confidence: 'medium', sources: ['author'],
+    },
+    {
+      id: 'enemy-overseers', faction: 'illuminate', name: 'Overseers',
+      howToKill: 'Headshots with a medium-penetration primary.',
+      confidence: 'medium', sources: ['author'],
+    },
+  ],
+
+  // ── FRONTS (by faction) ────────────────────────────────────────────────────
+  // What fighting each faction is like. faction: whose front; icon must exist in images/.
+  fronts: [
     {
       id: 'faction-terminids',
-      key: 'terminids',
+      faction: 'terminids',
       name: 'Terminids (bugs)',
       icon: 'images/faction-icons/Terminids.svg',
       summary:
@@ -70,25 +185,12 @@ const GUIDE_DATA = {
         'Chargers: step sideways at the last moment, then shoot the soft rear or strip the front leg armour with anti-tank.',
         'Bile Titans: anti-tank to the head, or a 500kg bomb or Railcannon; do not fight one with a light weapon.',
       ],
-      threats: [
-        { enemy: 'Hunters and Stalkers', answer: 'fast chasers; kill them first, they slow you and pin you for the swarm' },
-        { enemy: 'Chargers', answer: 'dodge, then hit the unarmoured back or legs; anti-tank on the head' },
-        { enemy: 'Bile Spewers', answer: 'medium armour; autocannon, grenades or explosives to the sacs' },
-        { enemy: 'Bile Titans', answer: 'Recoilless Rifle, Quasar Cannon, Railcannon or a 500kg bomb' },
-      ],
-      loadout: {
-        primaryAdvice: 'Something that clears crowds quickly: a shotgun such as the Breaker, or an incendiary option.',
-        supportWeapon: 'stalwart',
-        stratagems: ['stalwart', 'eagle-cluster-bomb', 'eagle-500kg-bomb', 'machine-gun-sentry'],
-        armourPassive: 'engineering-kit',
-        why: 'Crowd control first, one answer for big bugs, and extra grenades for closing holes.',
-      },
       confidence: 'medium',
       sources: ['author'],
     },
     {
       id: 'faction-automaton',
-      key: 'automaton',
+      faction: 'automaton',
       name: 'Automatons (bots)',
       icon: 'images/faction-icons/Automatons.svg',
       summary:
@@ -101,25 +203,12 @@ const GUIDE_DATA = {
         'Aim for weak points: Devastator heads, the glowing eye and the rear vents of Hulks, the back of Tank turrets.',
         'Explosions are the big killer; crouching or going prone steadies your aim and makes you a smaller target.',
       ],
-      threats: [
-        { enemy: 'Devastators', answer: 'headshots with a medium-penetration primary, or an autocannon' },
-        { enemy: 'Hulks', answer: 'anti-tank to the eye, or shoot the vents on the back' },
-        { enemy: 'Tanks and Cannon Towers', answer: 'anti-tank or a 500kg bomb to the rear vent' },
-        { enemy: 'Gunships', answer: 'shoot the engines with an autocannon, anti-materiel rifle or Spear' },
-      ],
-      loadout: {
-        primaryAdvice: 'A medium-penetration rifle or marksman weapon that can kill Devastators with headshots.',
-        supportWeapon: 'autocannon',
-        stratagems: ['autocannon', 'orbital-railcannon-strike', 'eagle-500kg-bomb', 'shield-generator-pack'],
-        armourPassive: 'fortified',
-        why: 'The autocannon handles fabricators, Devastators and gunships; the Railcannon and 500kg deal with Hulks and Tanks.',
-      },
       confidence: 'medium',
       sources: ['author'],
     },
     {
       id: 'faction-illuminate',
-      key: 'illuminate',
+      faction: 'illuminate',
       name: 'Illuminate (squids)',
       icon: 'images/faction-icons/Illuminate.svg',
       summary:
@@ -131,28 +220,70 @@ const GUIDE_DATA = {
         'Harvesters carry an energy shield. Break the shield with sustained fire or explosives, then hit the leg joints with anti-tank.',
         'Overseers are armoured infantry. Aim for the head, and watch for the ones with jetpacks.',
       ],
-      threats: [
-        { enemy: 'Watchers', answer: 'any hitscan weapon as soon as they appear' },
-        { enemy: 'Voteless hordes', answer: 'machine gun, flamethrower or a gas or cluster stratagem' },
-        { enemy: 'Harvesters', answer: 'drop the shield, then anti-tank on the leg joints' },
-        { enemy: 'Overseers', answer: 'headshots with a medium-penetration primary' },
-      ],
-      loadout: {
-        primaryAdvice: 'A primary with enough penetration for Overseers; the support weapon handles the crowds.',
-        supportWeapon: 'machine-gun',
-        stratagems: ['machine-gun', 'recoilless-rifle', 'eagle-cluster-bomb', 'orbital-gas-strike'],
-        armourPassive: 'medic-kit',
-        why: 'The machine gun keeps the Voteless off you, the Recoilless handles Harvesters, and the gas and cluster strikes thin the hordes.',
-      },
       confidence: 'medium',
       sources: ['author'],
     },
   ],
 
+  // ── LOADOUTS (by faction) ──────────────────────────────────────────────────
+  // faction: the front it is for. stratagems: stratagem ids (the support weapon among them);
+  // armourPassive: an armour passive id.
+  loadouts: [
+    {
+      id: 'loadout-terminids',
+      faction: 'terminids',
+      name: 'A good starting loadout against bugs',
+      primaryAdvice: 'Something that clears crowds quickly: a shotgun such as the Breaker, or an incendiary option.',
+      supportWeapon: 'stalwart',
+      stratagems: ['stalwart', 'eagle-cluster-bomb', 'eagle-500kg-bomb', 'machine-gun-sentry'],
+      armourPassive: 'engineering-kit',
+      why: 'Crowd control first, one answer for big bugs, and extra grenades for closing holes.',
+      confidence: 'medium',
+      sources: ['author'],
+    },
+    {
+      id: 'loadout-automaton',
+      faction: 'automaton',
+      name: 'A good starting loadout against bots',
+      primaryAdvice: 'A medium-penetration rifle or marksman weapon that can kill Devastators with headshots.',
+      supportWeapon: 'autocannon',
+      stratagems: ['autocannon', 'orbital-railcannon-strike', 'eagle-500kg-bomb', 'shield-generator-pack'],
+      armourPassive: 'fortified',
+      why: 'The autocannon handles fabricators, Devastators and gunships; the Railcannon and 500kg deal with Hulks and Tanks.',
+      confidence: 'medium',
+      sources: ['author'],
+    },
+    {
+      id: 'loadout-illuminate',
+      faction: 'illuminate',
+      name: 'A good starting loadout against the Illuminate',
+      primaryAdvice: 'A primary with enough penetration for Overseers; the support weapon handles the crowds.',
+      supportWeapon: 'machine-gun',
+      stratagems: ['machine-gun', 'recoilless-rifle', 'eagle-cluster-bomb', 'orbital-gas-strike'],
+      armourPassive: 'medic-kit',
+      why: 'The machine gun keeps the Voteless off you, the Recoilless handles Harvesters, and the gas and cluster strikes thin the hordes.',
+      confidence: 'medium',
+      sources: ['author'],
+    },
+  ],
+
+  // ── GUNS (by gun type) ─────────────────────────────────────────────────────
+  // Primaries and secondaries (support weapons are stratagems). type: a key from groups.gunTypes.
+  // An entry looks like this (remove the // to use it):
+  //   {
+  //     id: 'liberator', type: 'assault-rifle', name: 'AR-23 Liberator',
+  //     summary: 'One line: what it is good for.',
+  //     notes: 'Anything longer: armour penetration, magazine, how to use it.',
+  //     strongAgainst: ['terminids'],    // optional: faction keys
+  //     confidence: 'high', sources: ['owner'],
+  //   },
+  guns: [
+  ],
+
   // ── STRATAGEMS ─────────────────────────────────────────────────────────────
   // cooldownSeconds: the last value the author knew (see gameVersion).
   // uses: null = limited only by cooldown; otherwise {count, per: 'call'|'rearm'|'mission'}.
-  // strongAgainst / weakAgainst: faction keys.
+  // strongAgainst / weakAgainst: faction keys. category: a key from groups.stratagemTypes.
   stratagems: [
     {
       id: 'machine-gun', name: 'MG-43 Machine Gun', category: 'Support weapon',
@@ -489,7 +620,9 @@ const GUIDE_DATA = {
     },
   ],
 
-  // ── ARMOUR PASSIVES ────────────────────────────────────────────────────────
+  // ── ARMOUR PERKS (by armour weight) ────────────────────────────────────────
+  // armourWeights: the armour weights this passive comes on, e.g. ['light', 'medium'] (keys from
+  // groups.armourWeights). An entry without it shows under "Not sorted by armour weight yet".
   armourPassives: [
     {
       id: 'scout', name: 'Scout',
@@ -585,7 +718,8 @@ const GUIDE_DATA = {
 
   // ── SHIP MODULES ───────────────────────────────────────────────────────────
   // priority: 1 = buy early, 2 = buy when you use that stratagem type, 3 = later.
-  // Ship modules only affect the player who bought them.
+  // Ship modules only affect the player who bought them. They show in the Game mechanics block,
+  // under "Your Super Destroyer".
   shipModules: [
     {
       id: 'donation-access-license', name: 'Donation Access License', department: 'Patriotic Administration Center',
@@ -649,10 +783,11 @@ const GUIDE_DATA = {
     },
   ],
 
-  // ── MECHANICS PEOPLE GET WRONG ─────────────────────────────────────────────
+  // ── GAME MECHANICS (by topic) ──────────────────────────────────────────────
+  // topic: a key from groups.mechanicTopics ('galactic-map', 'mission', 'combat', 'ship').
   mechanics: [
     {
-      id: 'armour-penetration', title: 'Armour values and penetration',
+      id: 'armour-penetration', topic: 'combat', title: 'Armour values and penetration',
       commonMistake: 'Emptying a magazine into a heavily armoured plate and wondering why nothing happens.',
       explanation:
         'Every weapon has a penetration level and every body part has an armour level. If the armour is ' +
@@ -665,7 +800,7 @@ const GUIDE_DATA = {
       confidence: 'high', sources: ['author'],
     },
     {
-      id: 'breakpoints', title: 'Breakpoints',
+      id: 'breakpoints', topic: 'combat', title: 'Breakpoints',
       commonMistake: 'Judging a weapon by its damage number instead of how many hits it needs.',
       explanation:
         'What matters is how many hits it takes to kill a given enemy. A small damage boost that turns a ' +
@@ -678,7 +813,7 @@ const GUIDE_DATA = {
       confidence: 'high', sources: ['author'],
     },
     {
-      id: 'reinforce-budget', title: 'The reinforce budget',
+      id: 'reinforce-budget', topic: 'mission', title: 'The reinforce budget',
       commonMistake: 'Thinking each player has their own lives, or that an empty budget is the end of the mission.',
       explanation:
         'Reinforcements are a pool shared by the whole squad: five per player, so twenty for a full team, and ' +
@@ -691,7 +826,7 @@ const GUIDE_DATA = {
       confidence: 'high', sources: ['author', 'web-search-2026-09-27'],
     },
     {
-      id: 'extraction-timing', title: 'Extraction timing',
+      id: 'extraction-timing', topic: 'mission', title: 'Extraction timing',
       commonMistake: 'Calling extraction at the last second, or calling it while the landing zone is swarming.',
       explanation:
         'After you call extraction, the dropship takes a couple of minutes to arrive, and enemies keep coming ' +
@@ -704,7 +839,7 @@ const GUIDE_DATA = {
       confidence: 'medium', sources: ['author', 'web-search-2026-09-27'],
     },
     {
-      id: 'patrols-and-reinforcements', title: 'Patrols and enemy reinforcements',
+      id: 'patrols-and-reinforcements', topic: 'mission', title: 'Patrols and enemy reinforcements',
       commonMistake: 'Fighting every patrol you see, and letting enemies call for help.',
       explanation:
         'Patrols spawn away from the squad and wander the map, more often on higher difficulties. Most of your ' +
@@ -717,7 +852,7 @@ const GUIDE_DATA = {
       confidence: 'medium', sources: ['author'],
     },
     {
-      id: 'samples', title: 'Carrying samples',
+      id: 'samples', topic: 'mission', title: 'Carrying samples',
       commonMistake: 'Thinking samples are safe once you have picked them up.',
       explanation:
         'Samples only count if someone extracts with them. When you die you drop everything you are carrying ' +
@@ -729,7 +864,7 @@ const GUIDE_DATA = {
       confidence: 'high', sources: ['author'],
     },
     {
-      id: 'friendly-fire', title: 'Friendly fire',
+      id: 'friendly-fire', topic: 'combat', title: 'Friendly fire',
       commonMistake: 'Assuming stratagems, sentries and turrets can tell friend from foe.',
       explanation:
         'Almost everything hurts teammates: bullets, explosions, fire, gas, arcs, sentries and orbital strikes. ' +
@@ -741,7 +876,7 @@ const GUIDE_DATA = {
       confidence: 'high', sources: ['author'],
     },
     {
-      id: 'liberation-and-regeneration', title: 'Liberation against regeneration',
+      id: 'liberation-and-regeneration', topic: 'galactic-map', title: 'Liberation against regeneration',
       commonMistake: 'Thinking any planet with Helldivers on it is being won.',
       explanation:
         'Enemy planets heal back a little every hour. Liberation only moves forward when the Helldivers there ' +
@@ -755,7 +890,7 @@ const GUIDE_DATA = {
       confidence: 'medium', sources: ['author'],
     },
     {
-      id: 'defense-gambits', title: 'Defense gambits',
+      id: 'defense-gambits', topic: 'galactic-map', title: 'Defense gambits',
       commonMistake: 'Only ever defending the planet under attack.',
       explanation:
         'An attack on one of our planets is launched from a neighbouring enemy planet. The community found that ' +
@@ -769,7 +904,7 @@ const GUIDE_DATA = {
       confidence: 'medium', sources: ['author'],
     },
     {
-      id: 'stims-and-injuries', title: 'Stims and injuries',
+      id: 'stims-and-injuries', topic: 'combat', title: 'Stims and injuries',
       commonMistake: 'Limping around with an injured leg because you are not low on health.',
       explanation:
         'Limb injuries slow you (legs) or make your aim sway (arms) until you use a stim. A stim heals you ' +

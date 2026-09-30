@@ -6874,17 +6874,6 @@ function closePlanetDrawer({ returnFocus = true } = {}) {
   if (returnFocus && opener) opener.focus({ preventScroll: true });
 }
 
-// Shows a guide entry in guide mode, with the filters cleared so it isn't hidden.
-function showGuideEntry(entryId) {
-  changeViewMode('guide');
-  const searchBox = document.getElementById('guide-search');
-  const factionFilter = document.getElementById('guide-faction-filter');
-  if (searchBox) searchBox.value = '';
-  if (factionFilter) factionFilter.value = 'all';
-  applyGuideFilters();
-  focusAndReveal(document.getElementById(`guide-entry-${entryId}`));
-}
-
 // Page-wide clicks: any [data-open-planet] button opens the drawer; the drawer's own buttons
 // close it, open full details or open the guide.
 function handleDrawerClicks(event) {
@@ -7100,8 +7089,12 @@ function wireAdvancedNavigation() {
 }
 
 // ── GUIDE MODE ───────────────────────────────────────────────────────────────
-// Game knowledge from guide-data.js (GUIDE_DATA). It doesn't depend on the war
-// feeds, so it is rendered once at start-up and only re-filtered afterwards.
+// Game knowledge from guide-data.js (GUIDE_DATA), in seven blocks with groups inside: Enemies,
+// Fronts and Loadouts by faction, Armour perks by armour weight, Guns by gun type, Stratagems by
+// stratagem type, Game mechanics by topic. One block shows at a time (the tabs); a search looks
+// through every block. Each entry is a closed card with its name and one line; opening it shows
+// the rest and a "Copy link" button. It doesn't depend on the war feeds, so it is rendered once
+// at start-up and only re-filtered afterwards.
 
 const GUIDE_CONFIDENCE_LABELS = {
   high: null,
@@ -7109,25 +7102,74 @@ const GUIDE_CONFIDENCE_LABELS = {
   low: 'Likely out of date: check in game',
 };
 
+const GUIDE_BLOCK_STORAGE_KEY = 'hd2_guide_block';
+const GUIDE_FACTION_KEYS = ['terminids', 'automaton', 'illuminate'];
+
+// The blocks, in the order of the tabs. groups: where the block's groups come from (the three
+// factions, or a list in GUIDE_DATA.groups). Each list names its entries in GUIDE_DATA, their kind
+// (how a card is drawn) and the field that puts an entry in a group (or one fixed group).
+// otherLabel names the group for entries without a known group.
+const GUIDE_BLOCKS = [
+  { id: 'enemies', title: 'Enemies', groups: 'factions', otherLabel: 'Other enemies',
+    intro: 'The enemies that decide missions on each front, and how to deal with them.',
+    lists: [{ kind: 'enemy', dataKey: 'enemies', groupField: 'faction' }] },
+  { id: 'fronts', title: 'Fronts', groups: 'factions', otherLabel: 'Other fronts',
+    intro: 'What fighting each faction is like.',
+    lists: [{ kind: 'front', dataKey: 'fronts', groupField: 'faction' }] },
+  { id: 'loadouts', title: 'Loadouts', groups: 'factions', otherLabel: 'Other loadouts',
+    intro: 'Loadouts for each front, with links to their stratagems and armour perks.',
+    lists: [{ kind: 'loadout', dataKey: 'loadouts', groupField: 'faction' }] },
+  { id: 'armour', title: 'Armour perks', groups: 'armourWeights', otherLabel: 'Not sorted by armour weight yet',
+    intro: 'Armour passives, by the armour weights they come on.',
+    lists: [{ kind: 'armourPassive', dataKey: 'armourPassives', groupField: 'armourWeights' }] },
+  { id: 'guns', title: 'Guns', groups: 'gunTypes', otherLabel: 'Other guns',
+    intro: 'Primary and secondary weapons, by type. Support weapons are under Stratagems.',
+    lists: [{ kind: 'gun', dataKey: 'guns', groupField: 'type' }] },
+  { id: 'stratagems', title: 'Stratagems', groups: 'stratagemTypes', otherLabel: 'Other stratagems',
+    intro: 'Stratagems by type, with cooldowns, uses and what they pair with.',
+    lists: [{ kind: 'stratagem', dataKey: 'stratagems', groupField: 'category' }] },
+  { id: 'mechanics', title: 'Game mechanics', groups: 'mechanicTopics', otherLabel: 'Other mechanics',
+    intro: 'How things work, from the galactic map down to a single shot.',
+    lists: [{ kind: 'mechanic', dataKey: 'mechanics', groupField: 'topic' }, { kind: 'shipModule', dataKey: 'shipModules', fixedGroup: 'ship' }] },
+];
+
 // The guide content, or null when guide-data.js failed to load.
 function getGuideData() {
   return typeof GUIDE_DATA !== 'undefined' && isPlainObject(GUIDE_DATA) ? GUIDE_DATA : null;
 }
 
-// Every entry in the guide as {kind, entry}, in display order.
-function listGuideEntries(guideData) {
-  if (!guideData) return [];
-  const kinds = [
-    ['faction', guideData.factions], ['stratagem', guideData.stratagems],
-    ['armourPassive', guideData.armourPassives], ['shipModule', guideData.shipModules],
-    ['mechanic', guideData.mechanics],
-  ];
-  return kinds.flatMap(([kind, entries]) => asArray(entries).map(entry => ({ kind, entry })));
+// A block's groups as [{key, label, factionKey?}], in reading order.
+function getGuideGroups(guideData, block) {
+  if (block.groups === 'factions') {
+    return GUIDE_FACTION_KEYS.map(factionKey => ({ key: factionKey, label: getFactionDisplayName(factionKey), factionKey }));
+  }
+  return asArray(guideData?.groups?.[block.groups])
+    .filter(group => isPlainObject(group) && typeof group.key === 'string' && typeof group.label === 'string');
 }
 
-// Finds one guide entry by id, across every section.
+// The group keys an entry belongs to in a list: its fixed group, or the value of the list's
+// group field (a key, or a list of keys for armour weights). Empty when it has none.
+function getGuideEntryGroupKeys(list, entry) {
+  if (list.fixedGroup) return [list.fixedGroup];
+  const value = entry[list.groupField];
+  return asArray(Array.isArray(value) ? value : [value]).filter(key => typeof key === 'string' && key !== '');
+}
+
+// Every entry in the guide as {kind, entry, block}, in display order.
+function listGuideEntries(guideData) {
+  if (!guideData) return [];
+  return GUIDE_BLOCKS.flatMap(block => block.lists.flatMap(list =>
+    asArray(guideData[list.dataKey]).filter(isPlainObject).map(entry => ({ kind: list.kind, entry, block }))));
+}
+
+// Finds one guide entry by id, across every block.
 function findGuideEntry(guideData, entryId) {
-  return listGuideEntries(guideData).find(item => item.entry.id === entryId)?.entry || null;
+  return findGuideEntryPlace(guideData, entryId)?.entry || null;
+}
+
+// One guide entry with its kind and block ({kind, entry, block}), or null.
+function findGuideEntryPlace(guideData, entryId) {
+  return listGuideEntries(guideData).find(item => item.entry.id === entryId) || null;
 }
 
 // Everything searchable about an entry, lowercased into one string.
@@ -7143,13 +7185,14 @@ function getGuideEntrySearchText(entry) {
   return parts.join(' ').toLowerCase();
 }
 
-// Should this entry show for the current search text and front filter?
-// The front filter narrows factions and stratagems; general knowledge
-// (passives, modules, mechanics) is never hidden by it.
+// Should this entry show for the current search text and front filter? The front filter keeps
+// one faction's enemies, fronts and loadouts, and the stratagems and guns said to shine against
+// it; general knowledge (armour perks, mechanics, ship modules) is never hidden by it.
 function guideEntryMatches(kind, entry, searchText = '', factionKey = 'all') {
   if (factionKey !== 'all') {
-    if (kind === 'faction' && entry.key !== factionKey) return false;
+    if (['enemy', 'front', 'loadout'].includes(kind) && entry.faction !== factionKey) return false;
     if (kind === 'stratagem' && !asArray(entry.strongAgainst).includes(factionKey)) return false;
+    if (kind === 'gun' && asArray(entry.strongAgainst).length > 0 && !entry.strongAgainst.includes(factionKey)) return false;
   }
   const words = searchText.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return true;
@@ -7174,6 +7217,13 @@ function buildGuideConfidenceBadge(confidence) {
   const label = GUIDE_CONFIDENCE_LABELS[confidence];
   if (!label) return null;
   return buildElement('span', { className: `guide-confidence guide-confidence-${confidence}`, text: label });
+}
+
+// What a closed card says about its confidence: only "Check in game" for entries likely out of
+// date. Nearly every entry is "medium", so that note waits inside the opened card.
+function buildGuideConfidenceTag(confidence) {
+  if (confidence !== 'low') return null;
+  return buildElement('span', { className: 'guide-confidence-tag', text: '⚠ Check in game' });
 }
 
 // A link to another guide entry, by id (plain text when the id is unknown).
@@ -7213,29 +7263,70 @@ function buildGuideRow(label, content) {
   ]);
 }
 
-// The card for one guide entry, shaped by its kind.
-function buildGuideEntryCard(guideData, kind, entry) {
-  const title = entry.name || entry.title;
+// A group key as it can appear in an element id: "Support weapon" → "support-weapon".
+function slugifyGuideKey(key) {
+  return String(key).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+// The first sentence of a text, for a card's one-line summary.
+function firstSentence(text) {
+  const match = String(text || '').match(/^[\s\S]*?[.!?](?=\s|$)/);
+  return (match ? match[0] : String(text || '')).trim();
+}
+
+// The one line a closed card shows under its name.
+function describeGuideEntryLine(kind, entry) {
+  const lineByKind = {
+    enemy: entry.summary || entry.howToKill,
+    front: entry.summary,
+    loadout: entry.why,
+    armourPassive: entry.effect,
+    gun: entry.summary,
+    stratagem: entry.purpose,
+    mechanic: entry.summary || firstSentence(entry.explanation),
+    shipModule: entry.effect,
+  };
+  return typeof lineByKind[kind] === 'string' ? lineByKind[kind] : '';
+}
+
+// The names of a list of entries of one faction, as links (e.g. a front's enemies).
+function buildGuideFactionLinks(guideData, dataKey, factionKey) {
+  const entryIds = asArray(guideData[dataKey]).filter(item => isPlainObject(item) && item.faction === factionKey).map(item => item.id);
+  return entryIds.length > 0 ? buildGuideLinkList(guideData, entryIds) : null;
+}
+
+// What an opened card shows, by kind: paragraphs and lists (body) and label → value rows.
+function buildGuideEntryDetails(guideData, kind, entry) {
   const rows = [];
   const body = [];
-
-  if (kind === 'faction') {
-    const loadout = entry.loadout || {};
-    body.push(buildElement('p', { text: entry.summary }));
-    body.push(buildElement('h4', { text: 'How to fight them' }));
+  // The card's one line (describeGuideEntryLine) stays on screen when it opens, so nothing
+  // here repeats it.
+  if (kind === 'front') {
+    body.push(buildElement('h5', { text: 'How to fight them' }));
     body.push(buildElement('ul', { className: 'guide-list' },
       asArray(entry.howToFight).map(tip => buildElement('li', { text: tip }))));
-    body.push(buildTable(`Threats: ${title}`, ['Enemy', 'Answer'],
-      asArray(entry.threats).map(threat => [threat.enemy, threat.answer])));
-    body.push(buildElement('h4', { text: 'A good starting loadout' }));
     rows.push(
-      buildGuideRow('Primary', loadout.primaryAdvice),
-      buildGuideRow('Stratagems', buildGuideLinkList(guideData, loadout.stratagems)),
-      buildGuideRow('Armour passive', buildGuideEntryLink(guideData, loadout.armourPassive)),
-      buildGuideRow('Why', loadout.why),
+      buildGuideRow('Enemies to know', buildGuideFactionLinks(guideData, 'enemies', entry.faction)),
+      buildGuideRow('Loadouts', buildGuideFactionLinks(guideData, 'loadouts', entry.faction)),
+    );
+  } else if (kind === 'enemy') {
+    rows.push(
+      buildGuideRow('How to deal with it', entry.summary ? entry.howToKill : null),
+      buildGuideRow('Front', buildGuideEntryLink(guideData, `faction-${entry.faction}`)),
+    );
+  } else if (kind === 'loadout') {
+    rows.push(
+      buildGuideRow('Primary', entry.primaryAdvice),
+      buildGuideRow('Stratagems', buildGuideLinkList(guideData, entry.stratagems)),
+      buildGuideRow('Armour passive', entry.armourPassive ? buildGuideEntryLink(guideData, entry.armourPassive) : null),
+    );
+  } else if (kind === 'gun') {
+    rows.push(
+      buildGuideRow('Notes', entry.notes),
+      buildGuideRow('Shines against', buildGuideFactionChips(entry.strongAgainst)),
+      buildGuideRow('A waste against', buildGuideFactionChips(entry.weakAgainst)),
     );
   } else if (kind === 'stratagem') {
-    body.push(buildElement('p', { text: entry.purpose }));
     rows.push(
       buildGuideRow('Type', entry.category),
       buildGuideRow('Cooldown', formatStratagemCooldown(entry.cooldownSeconds)),
@@ -7246,12 +7337,16 @@ function buildGuideEntryCard(guideData, kind, entry) {
       buildGuideRow('Notes', entry.notes),
     );
   } else if (kind === 'armourPassive') {
-    rows.push(buildGuideRow('What it does', entry.effect), buildGuideRow('Worth it when', entry.whenWorthIt));
+    const weightLabels = asArray(entry.armourWeights).map(weightKey =>
+      asArray(guideData.groups?.armourWeights).find(group => group.key === weightKey)?.label || weightKey);
+    rows.push(
+      buildGuideRow('Worth it when', entry.whenWorthIt),
+      buildGuideRow('Comes on', weightLabels.length > 0 ? weightLabels.join(', ') : null),
+    );
   } else if (kind === 'shipModule') {
     const priorityText = { 1: 'Buy early', 2: 'Buy if you use it', 3: 'Later' }[entry.priority] || '—';
     rows.push(
       buildGuideRow('Department', entry.department),
-      buildGuideRow('What it does', entry.effect),
       buildGuideRow('Priority', `${priorityText}: ${entry.why}`),
     );
   } else if (kind === 'mechanic') {
@@ -7261,37 +7356,91 @@ function buildGuideEntryCard(guideData, kind, entry) {
     body.push(buildElement('ul', { className: 'guide-list' },
       asArray(entry.tips).map(tip => buildElement('li', { text: tip }))));
   }
+  return { body, rows };
+}
 
+// The card for one guide entry: closed, its name and one line; open, everything else and a
+// "Copy link" button. An entry in several groups (armour on several weights) gets one card per
+// group; only the first carries the id links and #guide= point at.
+function buildGuideEntryCard(guideData, kind, entry, { isCopy = false, groupKey = '' } = {}) {
+  const title = entry.name || entry.title;
+  const { body, rows } = buildGuideEntryDetails(guideData, kind, entry);
   // the logo comes from getFactionIconFile() so FACTION_ICON_DIRECTORY switches it too
-  const factionIconPath = kind === 'faction' ? (getFactionIconFile(entry.key) || entry.icon) : null;
-  const factionIcon = factionIconPath ? buildImage(factionIconPath, entry.name, 'faction-icon', 28, 28) : null;
-  return buildElement('article', {
-    className: `guide-entry guide-entry-${kind}`,
-    attributes: { id: `guide-entry-${entry.id}`, 'data-guide-kind': kind, tabindex: -1 },
+  const factionIconPath = kind === 'front' ? (getFactionIconFile(entry.faction) || entry.icon) : null;
+  const line = describeGuideEntryLine(kind, entry);
+  return buildElement('details', {
+    className: `guide-entry guide-entry-${kind}${isCopy ? ' guide-entry-copy' : ''}`,
+    attributes: {
+      id: isCopy ? `guide-entry-${entry.id}--${slugifyGuideKey(groupKey)}` : `guide-entry-${entry.id}`,
+      'data-guide-kind': kind, 'data-guide-entry-id': entry.id, tabindex: -1,
+    },
   }, [
-    buildElement('header', { className: 'guide-entry-header' }, [
-      factionIcon,
-      buildElement('h3', { text: title }),
-      buildGuideConfidenceBadge(entry.confidence),
+    buildElement('summary', { className: 'guide-entry-summary' }, [
+      factionIconPath ? buildImage(factionIconPath, entry.name, 'faction-icon', 28, 28) : null,
+      buildElement('span', { className: 'guide-entry-heading' }, [
+        buildElement('h4', { className: 'guide-entry-name', text: title }),
+        line ? buildElement('span', { className: 'guide-entry-line', text: line }) : null,
+        buildGuideConfidenceTag(entry.confidence),
+      ]),
     ]),
-    ...body,
-    rows.some(Boolean) ? buildElement('dl', { className: 'fact-list fact-list-detailed' }, rows) : null,
+    buildElement('div', { className: 'guide-entry-body' }, [
+      buildGuideConfidenceBadge(entry.confidence),
+      ...body,
+      rows.some(Boolean) ? buildElement('dl', { className: 'fact-list fact-list-detailed' }, rows) : null,
+      buildElement('p', { className: 'guide-entry-actions' }, [
+        buildElement('button', { className: 'link-button guide-copy-link', text: 'Copy link',
+          attributes: { type: 'button', 'data-guide-copy-link': entry.id } }),
+        buildElement('span', { className: 'guide-copy-status section-hint', attributes: { 'aria-live': 'polite' } }),
+      ]),
+    ]),
   ]);
 }
 
-// The five guide sections, in reading order.
-const GUIDE_SECTIONS = [
-  { kind: 'faction',       id: 'guide-factions',       title: 'Fighting each faction', dataKey: 'factions' },
-  { kind: 'stratagem',     id: 'guide-stratagems',     title: 'Stratagems',            dataKey: 'stratagems' },
-  { kind: 'armourPassive', id: 'guide-armour-passives', title: 'Armour passives',      dataKey: 'armourPassives' },
-  { kind: 'shipModule',    id: 'guide-ship-modules',   title: 'Ship modules',          dataKey: 'shipModules' },
-  { kind: 'mechanic',      id: 'guide-mechanics',      title: 'Mechanics people get wrong', dataKey: 'mechanics' },
-];
+// One block's groups, each with its cards, in reading order; entries without a known group go
+// in a last group named by the block's otherLabel.
+function buildGuideBlockGroups(guideData, block) {
+  const groups = getGuideGroups(guideData, block);
+  const knownKeys = new Set(groups.map(group => group.key));
+  const cardsByGroup = new Map([...groups.map(group => [group.key, []]), ['other', []]]);
+  const idsWithCard = new Set();
+  for (const list of block.lists) {
+    for (const entry of asArray(guideData[list.dataKey]).filter(isPlainObject)) {
+      const keys = getGuideEntryGroupKeys(list, entry).filter(key => knownKeys.has(key));
+      for (const key of keys.length > 0 ? keys : ['other']) {
+        const isCopy = idsWithCard.has(entry.id);
+        idsWithCard.add(entry.id);
+        cardsByGroup.get(key).push(buildGuideEntryCard(guideData, list.kind, entry, { isCopy, groupKey: key }));
+      }
+    }
+  }
+  const otherGroup = cardsByGroup.get('other').length > 0 ? [{ key: 'other', label: block.otherLabel }] : [];
+  return [...groups, ...otherGroup].map(group => {
+    const cards = cardsByGroup.get(group.key);
+    return buildElement('section', { className: 'guide-group',
+      attributes: { id: `guide-group-${block.id}-${slugifyGuideKey(group.key)}`, 'data-entry-count': cards.length } }, [
+      buildElement('h3', { className: 'guide-group-heading' }, [
+        group.factionKey ? buildImage(getFactionIconFile(group.factionKey), '', 'faction-icon faction-icon-small', 22, 22) : null,
+        ` ${group.label}`,
+      ]),
+      buildElement('p', { className: 'empty-state guide-group-empty', text: 'Nothing written here yet.', attributes: { hidden: cards.length > 0 } }),
+      buildElement('div', { className: 'guide-entries' }, cards),
+    ]);
+  });
+}
 
-// Builds the whole guide into #guide-content. Called once at start-up.
+// The block the tabs show, from storage, or the first.
+function readGuideBlock() {
+  const stored = readStoredValue(GUIDE_BLOCK_STORAGE_KEY);
+  return GUIDE_BLOCKS.some(block => block.id === stored) ? stored : GUIDE_BLOCKS[0].id;
+}
+
+let currentGuideBlockId = readGuideBlock();
+
+// Builds the whole guide into #guide-tabs and #guide-content. Called once at start-up.
 function renderGuide() {
   const guideData = getGuideData();
   if (!guideData) {
+    replaceContent('guide-tabs', []);
     replaceContent('guide-content', [buildElement('p', { className: 'empty-state',
       text: 'The guide could not be loaded (guide-data.js is missing or broken).' })]);
     return;
@@ -7302,62 +7451,131 @@ function renderGuide() {
     + ` Last edited ${guideData.lastEdited}.`);
   putTextInElement('guide-disclaimer', guideData.disclaimer);
 
-  replaceContent('guide-content', GUIDE_SECTIONS.map(section => {
-    const entries = asArray(guideData[section.dataKey]);
-    // Stratagems read better grouped by category (support weapon, orbital…).
-    const sortedEntries = section.kind === 'shipModule'
-      ? [...entries].sort((first, second) => (first.priority || 9) - (second.priority || 9))
-      : entries;
-    return buildElement('section', { className: 'panel guide-section', attributes: { id: section.id, 'aria-labelledby': `${section.id}-heading` } }, [
-      buildElement('h2', { text: section.title, attributes: { id: `${section.id}-heading` } }),
-      buildElement('p', { className: 'empty-state guide-no-matches', text: 'Nothing here matches your search.', attributes: { hidden: true } }),
-      buildElement('div', { className: 'guide-grid' },
-        sortedEntries.map(entry => buildGuideEntryCard(guideData, section.kind, entry))),
-    ]);
-  }));
+  replaceContent('guide-tabs', GUIDE_BLOCKS.map(block => buildElement('button', {
+    className: 'guide-tab',
+    attributes: { type: 'button', 'data-guide-block': block.id, 'aria-controls': `guide-block-${block.id}`, 'aria-pressed': 'false' },
+  }, [
+    buildElement('span', { text: block.title }),
+    buildElement('span', { className: 'guide-tab-count' }),
+  ])));
+  replaceContent('guide-content', GUIDE_BLOCKS.map(block => buildElement('section', {
+    className: 'panel guide-block',
+    attributes: { id: `guide-block-${block.id}`, 'aria-labelledby': `guide-block-${block.id}-heading` },
+  }, [
+    buildElement('h2', { text: block.title, attributes: { id: `guide-block-${block.id}-heading` } }),
+    buildElement('p', { className: 'section-hint', text: block.intro }),
+    buildElement('p', { className: 'empty-state guide-no-matches', text: 'Nothing here matches your search.', attributes: { hidden: true } }),
+    ...buildGuideBlockGroups(guideData, block),
+  ])));
   applyGuideFilters();
 }
 
-// Shows only the entries matching the search box and front filter, and
-// says so when a section ends up empty.
+// Shows one block (the tabs), and remembers it.
+function selectGuideBlock(blockId) {
+  if (!GUIDE_BLOCKS.some(block => block.id === blockId)) return;
+  currentGuideBlockId = blockId;
+  writeStoredValue(GUIDE_BLOCK_STORAGE_KEY, blockId);
+  applyGuideFilters();
+}
+
+// Shows the current block, or while searching every block with a match; hides the entries that
+// don't match the search and front filter, groups left empty by them, and says how many match.
 function applyGuideFilters() {
   const guideData = getGuideData();
   if (!guideData) return;
   const searchText = document.getElementById('guide-search')?.value || '';
   const factionKey = document.getElementById('guide-faction-filter')?.value || 'all';
+  const searching = searchText.trim() !== '';
+  const filtering = searching || factionKey !== 'all';
 
   let visibleCount = 0;
-  for (const section of GUIDE_SECTIONS) {
-    const sectionElement = document.getElementById(section.id);
-    if (!sectionElement) continue;
-    let visibleInSection = 0;
-    for (const entry of asArray(guideData[section.dataKey])) {
-      const card = document.getElementById(`guide-entry-${entry.id}`);
-      if (!card) continue;
-      const matches = guideEntryMatches(section.kind, entry, searchText, factionKey);
-      card.hidden = !matches;
-      if (matches) visibleInSection++;
+  for (const block of GUIDE_BLOCKS) {
+    const blockElement = document.getElementById(`guide-block-${block.id}`);
+    if (!blockElement) continue;
+    const matchingIds = new Set();
+    for (const list of block.lists) {
+      for (const entry of asArray(guideData[list.dataKey]).filter(isPlainObject)) {
+        if (guideEntryMatches(list.kind, entry, searchText, factionKey)) matchingIds.add(entry.id);
+      }
     }
-    sectionElement.querySelector('.guide-no-matches').hidden = visibleInSection > 0;
-    visibleCount += visibleInSection;
+    for (const card of blockElement.querySelectorAll('.guide-entry')) card.hidden = !matchingIds.has(card.dataset.guideEntryId);
+    for (const group of blockElement.querySelectorAll('.guide-group')) {
+      const shown = [...group.querySelectorAll('.guide-entry')].some(card => !card.hidden);
+      group.hidden = filtering && !shown;
+    }
+    const blockShown = searching ? matchingIds.size > 0 : block.id === currentGuideBlockId;
+    blockElement.hidden = !blockShown;
+    blockElement.querySelector('.guide-no-matches').hidden = !(filtering && matchingIds.size === 0);
+    visibleCount += matchingIds.size;
+
+    const tab = document.querySelector(`.guide-tab[data-guide-block="${block.id}"]`);
+    if (tab) {
+      tab.setAttribute('aria-pressed', String(!searching && block.id === currentGuideBlockId));
+      tab.querySelector('.guide-tab-count').textContent = filtering ? ` ${matchingIds.size}` : '';
+    }
   }
-  const filtering = searchText.trim() !== '' || factionKey !== 'all';
+  // searching with no match anywhere: keep the chosen block on screen with its "nothing matches"
+  if (searching && visibleCount === 0) document.getElementById(`guide-block-${currentGuideBlockId}`).hidden = false;
   putTextInElement('guide-match-count', filtering ? `${visibleCount} entries match` : '');
 }
 
-// Following a "pairs with" link to an entry the filters are hiding clears
-// the filters first, so the jump always lands on something visible.
-function handleGuideLinkClick(event) {
-  const link = event.target.closest && event.target.closest('a.guide-link');
-  if (!link) return;
-  const target = document.getElementById(link.getAttribute('href').slice(1));
-  if (target && target.hidden) {
-    const searchBox = document.getElementById('guide-search');
-    const factionFilter = document.getElementById('guide-faction-filter');
-    if (searchBox) searchBox.value = '';
-    if (factionFilter) factionFilter.value = 'all';
-    applyGuideFilters();
+// Shows a guide entry in guide mode: filters cleared, its block chosen, its card open.
+function showGuideEntry(entryId) {
+  const place = findGuideEntryPlace(getGuideData(), entryId);
+  changeViewMode('guide');
+  const searchBox = document.getElementById('guide-search');
+  const factionFilter = document.getElementById('guide-faction-filter');
+  if (searchBox) searchBox.value = '';
+  if (factionFilter) factionFilter.value = 'all';
+  if (place) selectGuideBlock(place.block.id);
+  else applyGuideFilters();
+  const card = document.getElementById(`guide-entry-${entryId}`);
+  if (card) card.open = true;
+  focusAndReveal(card);
+}
+
+// The address of a guide entry, for sharing (the page's own address with #guide=).
+function describeGuideEntryAddress(entryId) {
+  return `${window.location.href.split('#')[0]}#guide=${encodeURIComponent(entryId)}`;
+}
+
+// The "Copy link" button: copies the entry's address, or puts it in the address bar where the
+// browser won't allow copying (an old browser, or a page opened from disk).
+function copyGuideEntryLink(button) {
+  const entryId = button.dataset.guideCopyLink;
+  const address = describeGuideEntryAddress(entryId);
+  const status = button.parentElement?.querySelector('.guide-copy-status');
+  const say = text => { if (status) status.textContent = text; };
+  const showInAddressBar = () => {
+    history.replaceState(null, '', `#guide=${encodeURIComponent(entryId)}`);
+    say('The link is in the address bar.');
+  };
+  if (window.navigator.clipboard && typeof window.navigator.clipboard.writeText === 'function') {
+    return window.navigator.clipboard.writeText(address).then(() => say('Link copied.'), showInAddressBar);
   }
+  showInAddressBar();
+  return Promise.resolve();
+}
+
+// Clicks inside guide mode: a tab chooses its block, a link to another entry opens it (in
+// whatever block it is), and "Copy link" copies the entry's address.
+function handleGuideLinkClick(event) {
+  const target = event.target;
+  if (!target || !target.closest) return;
+  const tab = target.closest('.guide-tab');
+  if (tab) {
+    selectGuideBlock(tab.dataset.guideBlock);
+    return;
+  }
+  const copyButton = target.closest('[data-guide-copy-link]');
+  if (copyButton) {
+    copyGuideEntryLink(copyButton);
+    return;
+  }
+  const link = target.closest('a.guide-link');
+  if (!link) return;
+  if (typeof event.preventDefault === 'function') event.preventDefault();
+  showGuideEntry(link.getAttribute('href').replace(/^#guide-entry-/, ''));
 }
 
 // ── SUPPORT BOX ──────────────────────────────────────────────────────────────

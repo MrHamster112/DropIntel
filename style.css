@@ -753,26 +753,49 @@ input[type="search"] {
   width: min(100%, 280px);
 }
 
-.guide-grid {
+.guide-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.guide-tab { min-height: 40px; padding: 6px 12px; font-weight: 600; color: var(--text-secondary); }
+.guide-tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.guide-tab-count { font-weight: 400; font-variant-numeric: tabular-nums; }
+.guide-block { display: grid; gap: 12px; }
+.guide-block > h2, .guide-block > .section-hint { margin: 0; }
+.guide-group { display: grid; gap: 8px; }
+.guide-group-heading { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 1.05rem; }
+.guide-group .empty-state { margin: 0; }
+/* closed cards side by side on wide screens; an opened one reads as one column */
+.guide-entries {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  gap: var(--gap);
+  gap: 8px;
+  align-items: start;
 }
 .guide-entry {
   background: var(--surface-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 14px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-  align-content: start;
   scroll-margin-top: 16px;
 }
+.guide-entry[open] { grid-column: 1 / -1; }
 .guide-entry:target, .guide-entry:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
-.guide-entry-faction { grid-column: 1 / -1; }
-.guide-entry-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
-.guide-entry h4 { font-size: 0.95rem; color: var(--text-secondary); margin: 4px 0 0; }
+.guide-entry-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.guide-entry-summary::-webkit-details-marker { display: none; }
+.guide-entry-summary::before { content: "▸"; color: var(--text-muted); line-height: 1.5; }
+.guide-entry[open] > .guide-entry-summary::before { content: "▾"; }
+.guide-entry-heading { display: grid; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.guide-entry-name { margin: 0; font-size: 1rem; }
+.guide-entry-line { color: var(--text-secondary); font-size: 0.9rem; }
+.guide-entry-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 0 14px 14px; }
+.guide-entry h5 { font-size: 0.95rem; color: var(--text-secondary); margin: 4px 0 0; }
+.guide-entry-actions { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.guide-confidence-tag { color: var(--status-warning); font-size: 0.8rem; font-weight: 600; }
+.guide-entry-body > .guide-confidence { justify-self: start; }
 .guide-entry p { color: var(--text-secondary); max-width: 75ch; }
 .guide-list { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--text-secondary); }
 .guide-mistake strong { color: var(--status-warning); }
