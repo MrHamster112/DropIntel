@@ -5,8 +5,11 @@ name: Collect war history
 
 on:
   schedule:
-    # every 15 minutes, off the busy :00/:15/:30/:45 marks, where GitHub delays or drops runs
+    # a backup: GitHub runs this schedule late or skips it when busy (every 3-5 hours at times),
+    # so it stays off the busy :00/:15/:30/:45 marks
     - cron: '7-59/15 * * * *'
+  # what keeps the 15 minutes: cron-job.org calls this workflow's dispatch API (and the Run
+  # workflow button on the Actions tab)
   workflow_dispatch:
 
 permissions:
