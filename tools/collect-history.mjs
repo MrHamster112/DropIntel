@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 
 export const PRIMARY_API = 'https://api.helldivers2.dev';
 export const BACKUP_API = 'https://helldiverstrainingmanual.com/api/v1';
-// The primary API asks every client to say who it is and how to reach its maintainer.
+// The primary API asks every client to say who it is and how to reach its maintainer
+// (the same as the page's PRIMARY_API_REQUIRED_HEADERS).
 const PRIMARY_HEADERS = {
   'X-Super-Client': 'dropintel',
-  'X-Super-Contact': 'https://github.com/MrHamster112/DropIntel',
+  'X-Super-Contact': 'dropintel.contact@gmail.com',
 };
 const FETCH_TIMEOUT_MILLISECONDS = 15000;
 const RATE_LIMIT_WINDOW_MILLISECONDS = 10500;

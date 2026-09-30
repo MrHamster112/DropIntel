@@ -4,9 +4,11 @@
 
 const PRIMARY_API_URL            = 'https://api.helldivers2.dev/api/v1';
 const PRIMARY_API_V2_URL         = 'https://api.helldivers2.dev/api/v2';
+// The primary API's volunteers ask every client to say who it is and how to reach its maker, so
+// they can write before blocking a misbehaving app. The project's own address (not a personal one).
 const PRIMARY_API_REQUIRED_HEADERS = {
   'X-Super-Client':  'dropintel',
-  'X-Super-Contact': 'https://github.com/MrHamster112/DropIntel',
+  'X-Super-Contact': 'dropintel.contact@gmail.com',
 };
 const BACKUP_API_URL = 'https://helldiverstrainingmanual.com/api/v1';
 // The primary API answers in the language the browser asks for (Accept-Language),
@@ -5082,8 +5084,8 @@ const MAP_SIZE = 1000;
 const MAP_PADDING = 40;
 const MAP_ZOOM_LEVELS = [1, 2, 4];
 // The API's y grows upward (Super Earth at 0,0; the bot and bug fronts have
-// positive y), while SVG's y grows downward. Unverified against the in-game
-// map: flip this if the owner finds the map upside down.
+// positive y), while SVG's y grows downward. The owner compared the result
+// with the in-game galaxy map on 30 Sep 2026: the same way up.
 const MAP_Y_AXIS_POINTS_UP = true;
 
 // Zoom and focus survive re-renders on every refresh.
