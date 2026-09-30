@@ -56,10 +56,14 @@ const DEFENSE_MINIMUM_ELAPSED_FOR_AVERAGE_MILLISECONDS = 10 * 60 * 1000;
 const FACTION_NAME_BY_ID = { 1: 'Humans', 2: 'Terminids', 3: 'Automaton', 4: 'Illuminate' };
 
 // The numbers in a Major Order task the page reads (helldivers-2/json's
-// assignments/tasks/task/valueTypes.json). Tasks also carry an enemy unit id,
-// a stratagem id and a difficulty, which the page leaves alone: names for them
-// could only be guessed, so the owner writes the exact wording in major-order-fixes.js.
-const TASK_VALUE_TYPE = { FACTION_ID: 1, TARGET_AMOUNT: 3, LOCATION_TYPE: 11, LOCATION_INDEX: 12 };
+// assignments/tasks/task/valueTypes.json). Tasks also carry an enemy unit id (4),
+// a stratagem id (5) and a difficulty (9). Names for them could only be guessed, so
+// the page never names them: the unit id only tells it to say the exact enemy isn't
+// identified, and the owner writes the exact wording in major-order-fixes.js.
+const TASK_VALUE_TYPE = { FACTION_ID: 1, TARGET_AMOUNT: 3, UNIT_ID: 4, LOCATION_TYPE: 11, LOCATION_INDEX: 12 };
+
+// Shown after a task that names a specific enemy the page can't name (see TASK_VALUE_TYPE).
+const UNNAMED_ENEMY_NOTE = '(exact enemy not identified)';
 
 // What value type 11 says value type 12 is. A galaxy-wide "kill 25M Terminids"
 // carries location type 0 and index 0, and index 0 there is not Super Earth.
@@ -225,6 +229,7 @@ const apiData = {
   majorOrderHistory: loadMajorOrderHistory(Date.now()), // [{timestamp, assignmentId, progress[]}]
   sharedHistory: null,        // the collector's history.json, converted; in memory only (SHARED WAR HISTORY)
   sharedHistoryStatus: 'loading', // 'loading' | 'loaded' | 'unavailable'
+  restoredSnapshotTimestamp: null, // set while the page shows the saved snapshot (LAST-KNOWN-GOOD SNAPSHOT)
   knownBiomeNameByPlanetIndex: loadKnownBiomes(), // primary biome names, remembered for the backup API
   currentDataSource: null,    // 'PRIMARY' | 'FALLBACK' | null
   lastSuccessfulFetchTimestamp: null,
@@ -573,6 +578,7 @@ async function downloadEverythingFromPrimaryApi(onFastWaveReady) {
 
   applyHeavyFeedCacheToApiData();
   apiData.currentDataSource = 'PRIMARY';
+  apiData.restoredSnapshotTimestamp = null;
 
   if (heavyFeedsAreDue) {
     if (onFastWaveReady) onFastWaveReady();
@@ -750,6 +756,7 @@ async function downloadEverythingFromBackupApi() {
 
   apiData.spaceStations = convertBackupSpaceStations(warStatus.spaceStations);
   apiData.currentDataSource = 'FALLBACK';
+  apiData.restoredSnapshotTimestamp = null;
   rememberBackupWarStatus(warStatus, fetchedAtTimestamp);
 }
 
@@ -950,6 +957,7 @@ function recordPlanetHistorySamples(nowTimestamp) {
 const SHARED_HISTORY_URL = 'https://raw.githubusercontent.com/MrHamster112/DropIntel/war-history/history.json';
 const SHARED_HISTORY_REFRESH_MILLISECONDS = 10 * 60 * 1000;
 const SHARED_HISTORY_VERSION = 1;
+const SHARED_HISTORY_BEHIND_MILLISECONDS = 30 * 60 * 1000; // twice the collector's 15 minutes
 
 let sharedHistoryDownload = null;
 let nextSharedHistoryDueTimestamp = 0;
@@ -1047,7 +1055,7 @@ function refreshSharedHistory(nowTimestamp = Date.now()) {
     .then(converted => {
       if (converted) apiData.sharedHistory = converted;
       apiData.sharedHistoryStatus = apiData.sharedHistory ? 'loaded' : 'unavailable';
-      renderEverything();
+      renderVisibleParts();
     })
     .finally(() => { sharedHistoryDownload = null; });
   return sharedHistoryDownload;
@@ -1091,7 +1099,16 @@ function getPlanetSamples(planet) {
 // "History: shared, updated 7 min ago" or "History: this browser only".
 function describeHistorySource(nowTimestamp = Date.now()) {
   if (apiData.sharedHistoryStatus !== 'loaded' || !apiData.sharedHistory) return 'History: this browser only';
-  return `History: shared, updated ${formatTimeAgo(apiData.sharedHistory.updatedAtTimestamp, nowTimestamp)}`;
+  const age = formatTimeAgo(apiData.sharedHistory.updatedAtTimestamp, nowTimestamp);
+  return sharedHistoryIsBehind(nowTimestamp) ? `History: shared, but behind (last updated ${age})` : `History: shared, updated ${age}`;
+}
+
+// True when the war record hasn't been updated for a while (it should be every 15 minutes), so
+// its newest events and samples may be missing.
+function sharedHistoryIsBehind(nowTimestamp = Date.now()) {
+  const updatedAt = apiData.sharedHistory?.updatedAtTimestamp;
+  return apiData.sharedHistoryStatus === 'loaded' && isFiniteNumber(updatedAt)
+    && nowTimestamp - updatedAt > SHARED_HISTORY_BEHIND_MILLISECONDS;
 }
 
 // ── BIOME NAMES AND FACTION ICONS ────────────────────────────────────────────
@@ -2964,10 +2981,13 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
 function describeAssignmentTask(task, progressValue) {
   const fixes = getMajorOrderFixes();
   const description = describeAssignmentTaskAutomatically(task, progressValue);
-  const fix = fixes.taskText.find(entry => entry.pageSays.trim() === description.sentence);
+  // a fix copied from the card with the unnamed-enemy note still matches
+  const fix = fixes.taskText.find(entry =>
+    entry.pageSays.trim().replace(UNNAMED_ENEMY_NOTE, '').trim() === description.sentence);
   if (fix) {
     description.automaticSentence = description.sentence;
     description.sentence = fix.showInstead.trim();
+    description.enemyIsUnnamed = false; // the owner's words are the game's
   }
   return description;
 }
@@ -2983,6 +3003,7 @@ function describeAssignmentTaskAutomatically(task, progressValue) {
   // Sector names aren't in the feeds by index, so a sector is named by its number.
   const placeText    = planetName ? ` on ${planetName}` : (isFiniteNumber(sectorIndex) ? ` in sector #${sectorIndex}` : '');
   const factionName  = isFiniteNumber(factionId) ? (FACTION_NAME_BY_ID[factionId] || null) : null;
+  const unitId       = getTaskValue(task, TASK_VALUE_TYPE.UNIT_ID);
   const progress     = isFiniteNumber(progressValue) ? progressValue : 0;
 
   const description = {
@@ -2993,6 +3014,8 @@ function describeAssignmentTaskAutomatically(task, progressValue) {
     planetIndex: isFiniteNumber(planetIndex) ? planetIndex : null,
     sectorIndex: isFiniteNumber(sectorIndex) ? sectorIndex : null,
     factionName,
+    // the game names one kind of enemy here, and the page only says its faction
+    enemyIsUnnamed: isFiniteNumber(unitId) && unitId !== 0,
   };
 
   if (task.type === TASK_TYPE.LIBERATE_PLANET || task.type === TASK_TYPE.HOLD_PLANET) {
@@ -3215,6 +3238,8 @@ function describeConnectionState(nowTimestamp = Date.now()) {
   if (lastRefreshFailed) {
     state.kind = hasData ? 'stale' : 'offline';
     state.isStale = hasData;
+  } else if (apiData.restoredSnapshotTimestamp !== null) {
+    state.kind = 'restored';
   } else if (!hasData) {
     state.kind = 'loading';
   } else if (apiData.currentDataSource === 'FALLBACK') {
@@ -3244,6 +3269,7 @@ function changeViewMode(newMode) {
   viewMode = newMode;
   writeStoredValue(VIEW_MODE_STORAGE_KEY, newMode);
   applyViewMode();
+  renderOutOfDateParts();
 }
 
 // Shows the current mode's view, hides the other, and updates the buttons.
@@ -3344,10 +3370,34 @@ function buildGameMessage(message) {
   });
 }
 
-// Replaces everything inside an element (by id) with the given nodes.
+// Replaces everything inside an element (by id) with the given nodes. A control inside it that
+// had keyboard focus gets it back in the new copy, so a refresh doesn't throw a keyboard or
+// screen-reader user back to the top of the page.
 function replaceContent(elementId, nodes) {
   const element = document.getElementById(elementId);
-  if (element) element.replaceChildren(...asArray(nodes).filter(Boolean));
+  if (!element) return;
+  const focused = document.activeElement;
+  if (!focused || focused === element || !element.contains(focused)) {
+    element.replaceChildren(...asArray(nodes).filter(Boolean));
+    return;
+  }
+  const identity = describeFocusIdentity(focused);
+  const position = [...element.querySelectorAll(focused.tagName)].indexOf(focused);
+  element.replaceChildren(...asArray(nodes).filter(Boolean));
+  const candidates = [...element.querySelectorAll(focused.tagName)];
+  // the same control, or else whatever now sits where it was
+  const match = candidates.find(candidate => describeFocusIdentity(candidate) === identity)
+    || candidates[Math.min(position, candidates.length - 1)];
+  if (match) match.focus({ preventScroll: true });
+}
+
+// What identifies a control across a redraw: its tag, id, data-* attributes, label and link.
+function describeFocusIdentity(control) {
+  const attributes = [...control.attributes]
+    .filter(attribute => ['id', 'aria-label', 'href', 'name'].includes(attribute.name) || attribute.name.startsWith('data-'))
+    .map(attribute => `${attribute.name}=${attribute.value}`)
+    .sort();
+  return [control.tagName, ...attributes, attributes.length === 0 ? control.textContent : ''].join('|');
 }
 
 // True once any source has delivered data (even just the first fast wave).
@@ -3356,12 +3406,12 @@ function hasAnyData() {
 }
 
 // What an empty section says before the first data arrives, or while offline.
+// Short on purpose: the status line at the top says what is wrong, once, instead of every
+// panel repeating it.
 function buildWaitingMessage() {
   const state = describeConnectionState();
-  const text = state.kind === 'offline'
-    ? 'Can\'t reach the war servers right now. The page keeps retrying.'
-    : 'Waiting for the first report from Super Earth…';
-  return buildElement('p', { className: 'empty-state', text });
+  return buildElement('p', { className: 'empty-state is-waiting',
+    text: state.kind === 'offline' ? 'No data yet (see the message at the top).' : 'Loading…' });
 }
 
 // ── PLAIN-LANGUAGE VERDICTS ──────────────────────────────────────────────────
@@ -3524,17 +3574,40 @@ function putTextInElement(elementId, text) {
   if (element) element.textContent = text;
 }
 
-// Calls every render function below. Each one is isolated so a surprise in
-// one section can't blank the rest of the page.
-function renderEverything() {
-  const renderers = [
-    renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist, renderSimpleDropTargets,
-    renderSimpleLatestDispatch,
-    renderWarMap, renderGambits, renderWarStatistics, renderTrendGraphs, renderAssignmentsInFull, renderCampaigns, renderDefenseEvents,
-    renderPlanets, renderPlanetEffects, renderSpaceStation, renderNewsDispatches, renderAllEvents, renderRawData,
-    renderPlanetJumpOptions, renderPlanetDrawer, openPlanetFromLinkWhenKnown, checkForAlerts,
-    renderStatusBar,
+// Which renderers draw which part of the page: the simple view, each advanced section, and
+// the page-wide bits (Find a planet, the drawer, alerts, the status line). The refresh loop
+// draws only the parts on screen (renderVisibleParts) and marks the others out of date, so a
+// phone in simple mode doesn't rebuild the war map and a 260-row table every minute.
+function listPageParts() {
+  const advancedSection = (sectionId, renderers) => ({ id: sectionId, renderers,
+    isShown: () => viewMode === 'advanced' && !collapsedSectionIds.has(sectionId) });
+  return [
+    { id: 'simple-view', isShown: () => viewMode === 'simple', renderers: [
+      renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
+      renderSimpleDropTargets, renderSimpleLatestDispatch] },
+    advancedSection('advanced-section-war-map', [renderWarMap]),
+    advancedSection('advanced-section-gambits', [renderGambits]),
+    advancedSection('advanced-section-war-statistics', [renderWarStatistics]),
+    advancedSection('advanced-section-graphs', [renderTrendGraphs]),
+    advancedSection('advanced-section-assignments', [renderAssignmentsInFull]),
+    advancedSection('advanced-section-campaigns', [renderCampaigns]),
+    advancedSection('advanced-section-defense-events', [renderDefenseEvents]),
+    advancedSection('advanced-section-planets', [renderPlanets]),
+    advancedSection('advanced-section-planet-effects', [renderPlanetEffects]),
+    advancedSection('advanced-section-space-station', [renderSpaceStation]),
+    advancedSection('advanced-section-dispatches', [renderNewsDispatches]),
+    advancedSection('advanced-section-events', [renderAllEvents]),
+    advancedSection('advanced-section-raw-data', [renderRawData]),
+    { id: 'page-wide', isShown: () => true, renderers: [
+      renderPlanetJumpOptions, renderPlanetDrawer, openPlanetFromLinkWhenKnown, checkForAlerts, renderStatusBar] },
   ];
+}
+
+// Parts skipped by the last renders because they weren't on screen (ids from listPageParts).
+const outOfDatePartIds = new Set();
+
+// Runs renderers one by one, so a surprise in one section can't blank the rest of the page.
+function runRenderers(renderers) {
   for (const renderer of renderers) {
     try {
       renderer();
@@ -3543,6 +3616,44 @@ function renderEverything() {
     }
   }
   document.body.classList.toggle('is-stale', describeConnectionState().isStale);
+}
+
+// Draws every part of the page, shown or not. The page itself only draws what is on screen;
+// the tests use this to check any part.
+// eslint-disable-next-line no-unused-vars
+function renderEverything() {
+  runRenderers(listPageParts().flatMap(part => part.renderers));
+  outOfDatePartIds.clear();
+}
+
+// Draws the parts on screen and marks the rest out of date (the refresh loop's render). A hidden
+// tab draws nothing, but still checks for alerts.
+function renderVisibleParts() {
+  const shownRenderers = [];
+  for (const part of listPageParts()) {
+    if (!document.hidden && part.isShown()) {
+      shownRenderers.push(...part.renderers);
+      outOfDatePartIds.delete(part.id);
+    } else {
+      outOfDatePartIds.add(part.id);
+    }
+  }
+  if (document.hidden) shownRenderers.push(checkForAlerts);
+  runRenderers(shownRenderers);
+}
+
+// Draws the out-of-date parts that are on screen now (after a view switch, an opened section or
+// the tab coming back). With a part id, draws that part if it is out of date, shown or not.
+function renderOutOfDateParts(onlyPartId = null) {
+  if (outOfDatePartIds.size === 0) return;
+  const renderers = [];
+  for (const part of listPageParts()) {
+    if (!outOfDatePartIds.has(part.id)) continue;
+    if (onlyPartId ? part.id !== onlyPartId : (document.hidden || !part.isShown())) continue;
+    renderers.push(...part.renderers);
+    outOfDatePartIds.delete(part.id);
+  }
+  if (renderers.length > 0) runRenderers(renderers);
 }
 
 // ── SIMPLE MODE ──────────────────────────────────────────────────────────────
@@ -3627,6 +3738,7 @@ function renderMajorOrder() {
         described.isComplete
           ? buildElement('span', { className: 'status-icon', text: '✔', attributes: { 'aria-hidden': 'true' } }) : null,
         ...buildTaskSentenceWithPlanet(described.sentence, taskPlanet),
+        described.enemyIsUnnamed ? buildElement('span', { className: 'mo-task-unnamed', text: ` ${UNNAMED_ENEMY_NOTE}` }) : null,
       ]),
       described.progressPercent !== null ? buildMeter(described.progressPercent, 'Complete', statusName) : null,
       buildElement('p', { className: 'mo-task-progress',
@@ -3925,7 +4037,7 @@ function buildCampaignDetails(planet, liberationOutlook, defenseOutlook) {
   ];
 }
 
-// Every active campaign (defenses and liberations) with the chosen front
+// Planet battles: every active campaign (defenses and liberations) with the chosen front
 // filter and sort order applied. Pure: takes the choices, returns entries.
 function getAdvancedCampaignEntries(factionFilter = 'all', sortKey = 'priority') {
   const defenseEntries = rankDefenses().map(entry => ({
@@ -3991,7 +4103,8 @@ function renderWarStatistics() {
     ['Day of the war', warStart !== null ? `Day ${Math.floor((Date.now() - warStart) / 86400000) + 1}` : null],
     ['War clock', warTime !== null ? `${formatExactNumber(warTime)} s` : 'not read yet (comes from the backup API)'],
     ['Client version', apiData.warStatistics?.clientVersion || null],
-    ['Data source', apiData.currentDataSource || 'offline'],
+    ['Data source', apiData.currentDataSource === 'PRIMARY' ? 'Main API (api.helldivers2.dev)'
+      : apiData.currentDataSource === 'FALLBACK' ? 'Backup API (helldiverstrainingmanual.com)' : 'offline'],
   ];
 
   const statisticsLookOdd = isFiniteNumber(statistics.bulletsHit) && isFiniteNumber(statistics.bulletsFired)
@@ -4065,7 +4178,7 @@ function renderCampaigns() {
     readSelectValue('campaign-faction-filter', 'all'), readSelectValue('campaign-sort', 'priority'));
   if (entries.length === 0) {
     replaceContent('output-campaigns', [buildElement('p', { className: 'empty-state',
-      text: apiData.activeCampaigns.length ? 'No campaigns on this front.' : 'No active campaigns.' })]);
+      text: apiData.activeCampaigns.length ? 'No battles on this front.' : 'No planet battles right now.' })]);
     return;
   }
   replaceContent('output-campaigns', entries.map(entry => buildPlanetCard(entry.planet, {
@@ -4307,24 +4420,37 @@ function renderRawData() {
 
 // The live-region headline: where the data comes from and whether it is
 // trustworthy. Kept free of the ticking age so screen readers only hear changes.
+// Plain words only: the API names and raw errors go in the Details toggle (describeStatusDetails).
 function describeStatusHeadline(state) {
   const extras = [];
-  if (state.wasRateLimited) extras.push('Rate limited by the API.');
-  if (state.errorMessage && state.kind !== 'live') extras.push(state.errorMessage);
+  if (state.wasRateLimited) extras.push('The war servers asked the page to slow down.');
   // Per-feed failures only matter when the rest of the source worked.
   if (state.feedWarnings.length > 0 && (state.kind === 'live' || state.kind === 'fallback')) {
-    extras.push(`Some feeds failed: ${state.feedWarnings.map(warning => warning.split(':')[0]).join(', ')}.`);
+    extras.push('Some parts couldn\'t be loaded (see Details).');
   }
   const headlineByKind = {
     loading:  'Loading the war status…',
-    live:     `Live — ${state.sourceLabel} API`,
+    restored: `Showing saved data from ${state.dataAgeText} · updating…`,
+    live:     'Live',
     fallback: serverPreference === 'backup'
-      ? `Backup data — ${state.sourceLabel} API (chosen in Data source)`
-      : `Backup data — ${state.sourceLabel} API (the primary API is not answering)`,
-    stale:    `OFFLINE — showing data from ${state.dataAgeText}.`,
-    offline:  'OFFLINE — no data yet.',
+      ? 'Live (backup source, chosen in Settings)'
+      : 'Live (backup source: the main source isn\'t answering)',
+    stale:    `Offline: showing data from ${state.dataAgeText}. The page keeps retrying.`,
+    offline:  'Offline: can\'t reach the war servers yet. The page keeps retrying.',
   };
   return [headlineByKind[state.kind], ...extras].join(' ');
+}
+
+// The technical side of the status, for the Details toggle: which API answered, and any
+// raw error or feed warning. Empty when there is nothing worth showing.
+function describeStatusDetails(state) {
+  const lines = [];
+  if (state.errorMessage && state.kind !== 'live') lines.push(state.errorMessage);
+  for (const warning of state.feedWarnings) lines.push(warning);
+  if (lines.length === 0) return '';
+  const source = state.kind === 'fallback' ? 'Backup API: helldiverstrainingmanual.com'
+    : state.kind === 'live' ? 'Main API: api.helldivers2.dev' : null;
+  return [source, ...lines].filter(Boolean).join('\n');
 }
 
 // Writes the source headline → #status-bar and the data age → #data-age (text only, never HTML)
@@ -4336,8 +4462,14 @@ function renderStatusBar() {
     if (statusBar.textContent !== headline) statusBar.textContent = headline;
     statusBar.dataset.connectionState = state.kind;
   }
+  const details = document.getElementById('status-details');
+  if (details) {
+    const detailText = describeStatusDetails(state);
+    details.hidden = detailText === '';
+    putTextInElement('status-details-text', detailText);
+  }
   putTextInElement('data-age', state.kind === 'loading' || state.kind === 'offline' ? ''
-    : `Updated ${state.dataAgeText}${state.isRefreshing ? ' · refreshing…' : ''} · ${describeHistorySource()}`);
+    : `Updated ${state.dataAgeText} · ${describeHistorySource()}`); // the countdown says "Refreshing…"
 }
 
 // What the countdown says: refreshing, retrying after a failure, or the next refresh.
@@ -5649,6 +5781,15 @@ function buildPlanetJumpButton(planet) {
   return buildPlanetDrawerButton(planet);
 }
 
+// A reason's points, "+3" or "−2": the sign in green or red, the digits in the text colour, since
+// red digits on the dark panels are hard to read.
+function buildGambitPoints(points) {
+  return buildElement('span', { className: `gambit-points ${points > 0 ? 'is-plus' : 'is-minus'}` }, [
+    buildElement('span', { className: 'gambit-sign', text: points > 0 ? '+' : '−' }),
+    String(Math.abs(points)),
+  ]);
+}
+
 // One scored planet as a list item: name, what to do, score, and each reason with its points.
 function buildGambitCandidateItem(candidate) {
   const kindLabel = candidate.kind === 'defense' ? 'Defend'
@@ -5661,8 +5802,7 @@ function buildGambitCandidateItem(candidate) {
     ]),
     buildElement('ul', { className: 'gambit-reasons' }, [
       ...candidate.reasons.map(reason => buildElement('li', {}, [
-        buildElement('span', { className: `gambit-points ${reason.points > 0 ? 'is-plus' : 'is-minus'}`,
-          text: `${reason.points > 0 ? '+' : '−'}${Math.abs(reason.points)}` }),
+        buildGambitPoints(reason.points),
         buildElement('span', { text: reason.text }),
       ])),
       ...candidate.notes.map(note => buildElement('li', { className: 'gambit-note', text: note })),
@@ -6456,8 +6596,7 @@ function buildPlanetDrawerBody(details) {
   if (details.gambitCandidate) {
     sections.push(buildElement('h3', { text: `Gambit score ${details.gambitCandidate.score}` }));
     sections.push(buildElement('ul', { className: 'gambit-reasons' }, details.gambitCandidate.reasons.map(reason => buildElement('li', {}, [
-      buildElement('span', { className: `gambit-points ${reason.points > 0 ? 'is-plus' : 'is-minus'}`,
-        text: `${reason.points > 0 ? '+' : '−'}${Math.abs(reason.points)}` }),
+      buildGambitPoints(reason.points),
       buildElement('span', { text: reason.text }),
     ]))));
   }
@@ -6612,6 +6751,8 @@ function setSectionCollapsed(sectionId, collapsed) {
   if (collapsed) collapsedSectionIds.add(sectionId);
   else collapsedSectionIds.delete(sectionId);
   writeStoredValue(COLLAPSED_SECTIONS_STORAGE_KEY, JSON.stringify([...collapsedSectionIds]));
+  // a closed section isn't redrawn by the refresh loop, so it catches up when opened
+  if (!collapsed) renderOutOfDateParts(sectionId);
 }
 
 // Puts every collapsible section into its remembered state.
@@ -6663,6 +6804,9 @@ function findPlanetsMatching(query, limit = 8) {
 function jumpToPlanet(planetIndex) {
   if (viewMode !== 'advanced') changeViewMode('advanced');
 
+  // a closed section may hold an old copy, so both places a planet can be are brought up to date
+  renderOutOfDateParts('advanced-section-campaigns');
+  renderOutOfDateParts('advanced-section-planets');
   // a front filter could be hiding the card, so show every front first
   const factionFilter = document.getElementById('campaign-faction-filter');
   const isBattlePlanet = apiData.indexesOfPlanetsWithActiveBattles.has(planetIndex);
@@ -6704,6 +6848,19 @@ function handlePlanetJumpSubmit(event) {
   return opened ? document.getElementById('planet-drawer') : null;
 }
 
+// Phones hide Find a planet behind a button, to keep the header short: shows or hides it, and
+// puts the cursor in the box when it opens. Returns whether it is open.
+function togglePlanetJumpForm(open = null) {
+  const form = document.getElementById('planet-jump-form');
+  const toggle = document.getElementById('planet-jump-toggle');
+  if (!form || !toggle) return false;
+  const isOpen = open === null ? toggle.getAttribute('aria-expanded') !== 'true' : open;
+  form.classList.toggle('is-open', isOpen);
+  toggle.setAttribute('aria-expanded', String(isOpen));
+  if (isOpen) document.getElementById('planet-jump-input')?.focus();
+  return isOpen;
+}
+
 // Fills the jump box's suggestions: planets in battle first, then the rest.
 function renderPlanetJumpOptions() {
   const datalist = document.getElementById('planet-jump-options');
@@ -6726,6 +6883,8 @@ function wireAdvancedNavigation() {
   if (sectionNav) sectionNav.addEventListener('click', handleSectionNavClick);
   const jumpForm = document.getElementById('planet-jump-form');
   if (jumpForm) jumpForm.addEventListener('submit', handlePlanetJumpSubmit);
+  const jumpToggle = document.getElementById('planet-jump-toggle');
+  if (jumpToggle) jumpToggle.addEventListener('click', () => togglePlanetJumpForm());
   const expandAll = document.getElementById('expand-all-sections');
   if (expandAll) expandAll.addEventListener('click', () => setAllSectionsCollapsed(false));
   const collapseAll = document.getElementById('collapse-all-sections');
@@ -7239,10 +7398,17 @@ function describeMissingEvents() {
   return 'No events recorded in the last two weeks yet.';
 }
 
+// A note for event lists when the war record is behind, or null.
+function buildEventsBehindNote() {
+  if (!sharedHistoryIsBehind()) return null;
+  return buildElement('p', { className: 'section-hint events-behind',
+    text: `The war record was last updated ${formatTimeAgo(apiData.sharedHistory.updatedAtTimestamp)}, so the newest events may be missing.` });
+}
+
 // The last few events → #simple-events
 function renderSimpleEvents() {
   const events = getRecentEvents().slice(0, SIMPLE_EVENT_COUNT);
-  replaceContent('simple-events', [events.length > 0
+  replaceContent('simple-events', [buildEventsBehindNote(), events.length > 0
     ? buildElement('ol', { className: 'event-list' }, events.map(event => buildEventItem(event)))
     : buildElement('p', { className: 'empty-state', text: describeMissingEvents() })]);
 }
@@ -7250,7 +7416,7 @@ function renderSimpleEvents() {
 // Every recorded event, with dates → #output-events
 function renderAllEvents() {
   const events = getRecentEvents();
-  replaceContent('output-events', [events.length > 0
+  replaceContent('output-events', [buildEventsBehindNote(), events.length > 0
     ? buildElement('ol', { className: 'event-list' }, events.map(event => buildEventItem(event, { withDate: true })))
     : buildElement('p', { className: 'empty-state', text: describeMissingEvents() })]);
 }
@@ -7399,7 +7565,8 @@ function deliverAlert(alert, nowTimestamp = Date.now()) {
 // Compares the fresh data with what was seen before and announces anything new (called after
 // every render). Returns the alerts it announced.
 function checkForAlerts(nowTimestamp = Date.now()) {
-  if (apiData.planets.length === 0) return [];
+  // a restored snapshot is old data: the first fresh render sets the baseline instead
+  if (apiData.planets.length === 0 || apiData.restoredSnapshotTimestamp !== null) return [];
   const ownerChanges = findOwnerChanges(nowTimestamp);
   if (!alertSettings.enabled) return [];
   const candidates = [...collectAlertCandidates(nowTimestamp), ...ownerChanges]
@@ -7489,6 +7656,74 @@ function wireAlertSettings() {
   window.addEventListener('focus', markRead);
 }
 
+// ── LAST-KNOWN-GOOD SNAPSHOT ─────────────────────────────────────────────────
+// After every good refresh the page saves a small copy of what simple mode shows (orders,
+// battles, war statistics, the latest dispatch). The next visit draws it at once, labelled
+// "Showing saved data from 14 min ago · updating…", instead of an empty page while the war
+// servers answer, or when they don't. Fresh data replaces it as soon as it arrives.
+
+const LAST_SNAPSHOT_STORAGE_KEY = 'hd2_last_snapshot';
+const LAST_SNAPSHOT_VERSION = 1;
+const LAST_SNAPSHOT_MAX_AGE_MILLISECONDS = 24 * 60 * 60 * 1000; // older than a day says little
+
+// A planet cut down to what the cards, trends and drawer read (no descriptions, no regions).
+function trimPlanetForSnapshot(planet) {
+  return {
+    index: planet.index, name: planet.name, sector: planet.sector, biome: { name: planet.biome?.name ?? null },
+    hazards: asArray(planet.hazards).map(hazard => ({ name: hazard.name })),
+    health: planet.health, maxHealth: planet.maxHealth, regenPerSecond: planet.regenPerSecond,
+    currentOwner: planet.currentOwner, disabled: planet.disabled, event: planet.event,
+    statistics: { playerCount: planet.statistics?.playerCount ?? null },
+    waypoints: asArray(planet.waypoints), attacking: asArray(planet.attacking), position: planet.position ?? null,
+  };
+}
+
+// The small copy saved after a good refresh.
+function buildLastKnownGoodSnapshot() {
+  return {
+    version: LAST_SNAPSHOT_VERSION,
+    savedAt: apiData.lastSuccessfulFetchTimestamp,
+    currentDataSource: apiData.currentDataSource,
+    warStatistics: apiData.warStatistics,
+    assignments: apiData.assignments,
+    activeCampaigns: apiData.activeCampaigns.map(campaign => ({
+      id: campaign.id, type: campaign.type, faction: campaign.faction, planet: trimPlanetForSnapshot(campaign.planet),
+    })),
+    newsDispatches: apiData.newsDispatches.slice(0, 1),
+  };
+}
+
+// Saves the snapshot (only from fresh data, never from a restored copy).
+function saveLastKnownGoodSnapshot() {
+  if (apiData.restoredSnapshotTimestamp !== null || !isFiniteNumber(apiData.lastSuccessfulFetchTimestamp)) return;
+  writeStoredValue(LAST_SNAPSHOT_STORAGE_KEY, JSON.stringify(buildLastKnownGoodSnapshot()));
+}
+
+// Draws the saved snapshot into apiData when it is recent enough and nothing fresher is there.
+// Returns true when it did.
+function restoreLastKnownGoodSnapshot(nowTimestamp = Date.now()) {
+  if (hasAnyData()) return false;
+  let snapshot;
+  try {
+    snapshot = JSON.parse(readStoredValue(LAST_SNAPSHOT_STORAGE_KEY) || 'null');
+  } catch {
+    return false;
+  }
+  if (!isPlainObject(snapshot) || snapshot.version !== LAST_SNAPSHOT_VERSION || !isFiniteNumber(snapshot.savedAt)) return false;
+  if (nowTimestamp - snapshot.savedAt > LAST_SNAPSHOT_MAX_AGE_MILLISECONDS || snapshot.savedAt > nowTimestamp) return false;
+
+  apiData.warStatistics = isPlainObject(snapshot.warStatistics) ? snapshot.warStatistics : null;
+  apiData.assignments = asArray(snapshot.assignments).map(normalizeAssignment).filter(Boolean);
+  apiData.activeCampaigns = asArray(snapshot.activeCampaigns).map(normalizeCampaign).filter(Boolean);
+  apiData.defenseEvents = apiData.activeCampaigns.map(campaign => campaign.planet).filter(planet => planet.event);
+  apiData.newsDispatches = asArray(snapshot.newsDispatches).map(normalizeDispatch).filter(Boolean);
+  apiData.currentDataSource = snapshot.currentDataSource === 'FALLBACK' ? 'FALLBACK' : 'PRIMARY';
+  apiData.lastSuccessfulFetchTimestamp = snapshot.savedAt;
+  apiData.restoredSnapshotTimestamp = snapshot.savedAt;
+  overlayFreshBattleDataOntoPlanetList();
+  return true;
+}
+
 // ── REFRESH LOOP ─────────────────────────────────────────────────────────────
 
 let lastRefreshStartedTimestamp = 0;
@@ -7516,9 +7751,10 @@ async function runRefreshCycle() {
   lastRefreshStartedTimestamp = Date.now();
   renderStatusBar();
 
-  const downloadSucceeded = await downloadAllData(renderEverything);
+  const downloadSucceeded = await downloadAllData(renderVisibleParts);
   lastRefreshFailed = !downloadSucceeded;
-  renderEverything();
+  if (downloadSucceeded) saveLastKnownGoodSnapshot();
+  renderVisibleParts();
 
   scheduleNextRefresh();
   return downloadSucceeded;
@@ -7538,8 +7774,10 @@ function getSecondsUntilNextRefresh(nowTimestamp = Date.now()) {
 // Once a second: updates the countdown and the data age, and refreshes when due
 // (the war feeds every minute, the shared history every 10 minutes).
 function tickCountdown() {
-  if (getSecondsUntilNextRefresh() <= 0 && !refreshInProgress) refreshEverythingNow();
-  refreshSharedHistoryWhenDue();
+  // A hidden tab only keeps refreshing when alerts are on; coming back catches up at once.
+  const keepsRefreshing = !document.hidden || alertSettings.enabled;
+  if (keepsRefreshing && getSecondsUntilNextRefresh() <= 0 && !refreshInProgress) refreshEverythingNow();
+  if (!document.hidden) refreshSharedHistoryWhenDue();
   putTextInElement('countdown-text', describeCountdown());
   renderStatusBar();
 }
@@ -7550,10 +7788,12 @@ function startCountdownTimer() {
   countdownTimer = setInterval(tickCountdown, 1000);
 }
 
-// Coming back to the tab (e.g. alt-tabbing out of the game) refreshes at once
-// if the data is older than one refresh interval.
+// Coming back to the tab (e.g. alt-tabbing out of the game) draws what was skipped while it
+// was hidden, and refreshes at once if the data is older than one refresh interval.
 function handleVisibilityChange() {
-  if (document.hidden || refreshInProgress) return;
+  if (document.hidden) return;
+  renderOutOfDateParts();
+  if (refreshInProgress) return;
   const dataAgeMilliseconds = Date.now() - (apiData.lastSuccessfulFetchTimestamp || 0);
   if (dataAgeMilliseconds >= REFRESH_INTERVAL_SECONDS * 1000) refreshEverythingNow();
 }
@@ -7591,7 +7831,8 @@ function startApp() {
   applyDonationLink();
   applyViewMode();
   renderGuide();
-  renderEverything();
+  restoreLastKnownGoodSnapshot();
+  renderVisibleParts();
   // after the first render, so a link to a section or guide entry has something to show
   wireSettingsAndLinks();
   wireAlertSettings();

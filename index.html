@@ -12,10 +12,19 @@
   <meta property="og:title" content="DropIntel · a fan-made war tracker for Helldivers 2" />
   <meta property="og:description" content="The Major Order and its pace, planets under attack, where to drop next, a galactic war map and gambits per front. Free, unofficial, updated every minute." />
   <meta property="og:url" content="https://mrhamster112.github.io/DropIntel/" />
-  <meta name="twitter:card" content="summary" />
+  <!-- the preview picture is drawn for this page (the globe from images/faction-icons-drawn), not the game's art -->
+  <meta property="og:image" content="https://mrhamster112.github.io/DropIntel/images/link-preview.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="DropIntel, a fan-made war tracker for Helldivers 2, with a yellow globe" />
+  <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="DropIntel · a fan-made war tracker for Helldivers 2" />
   <meta name="twitter:description" content="The Major Order and its pace, planets under attack, where to drop next, a galactic war map and gambits per front." />
+  <meta name="twitter:image" content="https://mrhamster112.github.io/DropIntel/images/link-preview.png" />
+  <meta name="twitter:image:alt" content="DropIntel, a fan-made war tracker for Helldivers 2, with a yellow globe" />
   <meta name="theme-color" content="#f5c518" />
+  <link rel="canonical" href="https://mrhamster112.github.io/DropIntel/" />
+  <link rel="icon" href="images/faction-icons-drawn/Super%20Earth.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="style.css">
   <script src="guide-data.js" defer></script>
   <script src="major-order-fixes.js" defer></script>
@@ -41,8 +50,9 @@
     </div>
 
     <div class="refresh-controls">
-      <button type="button" id="refresh-button" class="refresh-button">Refresh now</button>
-      <span class="countdown" id="countdown-text">Next refresh in 60s</span>
+      <button type="button" id="refresh-button" class="refresh-button"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">Refresh now</span></button>
+      <!-- phones only: Find a planet opens from here, so the header stays short -->
+      <button type="button" id="planet-jump-toggle" class="planet-jump-toggle" aria-label="Find a planet" aria-expanded="false" aria-controls="planet-jump-form"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.6 12.6 18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
     </div>
 
     <form id="planet-jump-form" class="planet-jump" role="search">
@@ -56,7 +66,7 @@
   </div>
 
   <details id="settings-panel" class="settings-panel">
-    <summary>Settings</summary>
+    <summary><svg class="settings-icon" aria-hidden="true" width="20" height="20" viewBox="0 0 20 20"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="settings-label">Settings</span></summary>
     <div class="settings-body">
       <label class="server-choice">Data source
         <select id="server-select">
@@ -116,7 +126,12 @@
 
   <div class="status-line">
     <p id="status-bar" class="status-bar" role="status" aria-live="polite">Loading…</p>
+    <span class="countdown" id="countdown-text">Next refresh in 60s</span>
     <p id="data-age" class="data-age"></p>
+    <details id="status-details" class="status-details" hidden>
+      <summary>Details</summary>
+      <p id="status-details-text"></p>
+    </details>
   </div>
 </header>
 
@@ -138,8 +153,18 @@
         <ol id="mo-tasks" class="mo-tasks"></ol>
         <p id="mo-reward" class="mo-reward"></p>
         <p id="mo-more" class="mo-more"></p>
-        <p class="section-hint mo-note">The page works out these tasks by itself from the game's data and names the enemy faction, not the exact enemy, so a task can be worded wrong. The online version at mrhamster112.github.io/DropIntel is corrected by hand; a downloaded (offline) copy only has the corrections made before it was downloaded.</p>
+        <details class="section-hint mo-note">
+          <summary>How is this worded?</summary>
+          <p>The page works out these tasks by itself from the game's data and names the enemy faction, not the exact enemy, so a task can be worded wrong. The online version at mrhamster112.github.io/DropIntel is corrected by hand; a downloaded (offline) copy only has the corrections made before it was downloaded.</p>
+        </details>
       </div>
+    </section>
+
+    <section class="panel" aria-labelledby="drop-heading">
+      <h2 id="drop-heading">Where to drop</h2>
+      <p class="section-hint">Ranked by the Major Order, how the fight is going, and where other Helldivers are.</p>
+      <p id="drop-targets-front-note" class="section-hint" hidden></p>
+      <div id="simple-drop-targets" class="card-grid"></div>
     </section>
 
     <section class="panel" aria-labelledby="defenses-heading">
@@ -153,13 +178,6 @@
       <div id="simple-alerts"></div>
       <div id="simple-events"></div>
       <div id="simple-watchlist"></div>
-    </section>
-
-    <section class="panel" aria-labelledby="drop-heading">
-      <h2 id="drop-heading">Where to drop</h2>
-      <p class="section-hint">Ranked by the Major Order, how the fight is going, and where other Helldivers are.</p>
-      <p id="drop-targets-front-note" class="section-hint" hidden></p>
-      <div id="simple-drop-targets" class="card-grid"></div>
     </section>
 
     <section class="panel" aria-labelledby="dispatch-heading">
@@ -176,7 +194,7 @@
         <a href="#war-statistics-heading" data-section="advanced-section-war-statistics">Statistics</a>
         <a href="#graphs-heading" data-section="advanced-section-graphs">Graphs</a>
         <a href="#assignments-heading" data-section="advanced-section-assignments">Orders</a>
-        <a href="#campaigns-heading" data-section="advanced-section-campaigns">Campaigns</a>
+        <a href="#campaigns-heading" data-section="advanced-section-campaigns">Battles</a>
         <a href="#defense-events-heading" data-section="advanced-section-defense-events">Defenses</a>
         <a href="#planets-heading" data-section="advanced-section-planets">Planets</a>
         <a href="#planet-effects-heading" data-section="advanced-section-planet-effects">Effects</a>
@@ -245,7 +263,7 @@
 
     <section class="panel collapsible-section" id="advanced-section-campaigns" aria-labelledby="campaigns-heading">
       <h2 id="campaigns-heading" class="collapsible-heading">
-        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-campaigns-body">Every active campaign</button>
+        <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="advanced-section-campaigns-body">Planet battles</button>
       </h2>
       <div id="advanced-section-campaigns-body" class="collapsible-body">
         <div class="section-controls">

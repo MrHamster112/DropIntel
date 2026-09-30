@@ -109,6 +109,10 @@ a:hover { text-decoration-thickness: 2px; }
 
 .header-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
 .refresh-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.refresh-button { display: inline-flex; align-items: center; gap: 6px; }
+.refresh-icon { font-size: 1.15em; line-height: 1; }
+/* The Find a planet toggle and the settings icon are for phones (SMALL SCREENS). */
+.planet-jump-toggle, .settings-icon { display: none; }
 
 button, select {
   font: inherit;
@@ -159,6 +163,10 @@ button:disabled { opacity: 0.6; cursor: progress; }
   font-size: 0.9rem;
 }
 .data-age { color: var(--text-muted); font-size: 0.85rem; }
+.status-details { font-size: 0.85rem; color: var(--text-muted); }
+.status-details summary { cursor: pointer; }
+#status-details-text { margin: 4px 0 0; white-space: pre-line; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 0.8rem; }
+.status-bar[data-connection-state="restored"]::before { color: var(--status-warning); }
 .status-bar::before {
   content: "●";
   margin-right: 8px;
@@ -250,6 +258,9 @@ main { outline: none; }
 .mo-task.is-complete .mo-task-sentence .status-icon { color: var(--status-good); margin-right: 6px; }
 .mo-reward { font-weight: 600; }
 .mo-note { margin: 12px 0 0; font-size: 0.85rem; }
+.mo-note > summary { cursor: pointer; width: fit-content; padding: 6px 0; }
+.mo-note > p { margin: 4px 0 0; }
+.mo-task-unnamed { color: var(--text-muted); font-size: 0.85em; font-weight: 400; }
 .mo-more { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
 
 /* ── METERS AND STATUS LINES ──────────────────────────────────────────────── */
@@ -591,16 +602,19 @@ svg.war-map { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; ma
 .gambit-reasons > li { display: grid; grid-template-columns: 4.5ch minmax(0, 1fr); gap: 6px; }
 .gambit-reasons > li.gambit-note { display: block; }
 .gambit-points { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
-.gambit-points.is-plus  { color: var(--status-good); }
-.gambit-points.is-minus { color: var(--status-critical); }
+.gambit-points.is-plus .gambit-sign  { color: var(--status-good); }
+.gambit-points.is-minus .gambit-sign { color: var(--status-critical); }
 .gambit-note { color: var(--text-muted); font-style: italic; }
 .gambit-option p { margin: 4px 0 0; color: var(--text-secondary); }
 .gambit-option .verdict { margin: 0; }
 .link-button {
+  position: relative;
   background: none; border: 0; padding: 0; min-height: 0;
   color: var(--accent); font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 3px;
   cursor: pointer; text-align: left;
 }
+/* A finger-sized tap area around the text, without moving anything. */
+.link-button::after { content: ""; position: absolute; inset: -10px -4px; }
 .link-button:hover { color: var(--text-primary); }
 
 /* Optional AI summaries: always labelled, visibly different from the local analysis. */
@@ -809,9 +823,39 @@ input[type="search"] {
 /* ── SMALL SCREENS ────────────────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
+  /* A short header, so the war status starts in the first screen:
+     title + icon buttons, the view switch, then one status line. */
+  .site-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title tools" "views views" "jump jump" "settings settings" "status status";
+    gap: 0 8px;
+    padding: 10px 0 8px;
+    margin-bottom: 14px;
+  }
+  .header-controls { display: contents; }
+  .site-title { grid-area: title; gap: 8px; min-width: 0; }
+  .site-emblem { width: 32px; height: 32px; }
   .site-title h1 { font-size: 1.15rem; }
-  .header-controls { width: 100%; justify-content: space-between; }
-  .refresh-controls, .server-choice { width: 100%; }
+  .site-subtitle { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .refresh-controls { grid-area: tools; flex-wrap: nowrap; gap: 8px; margin-right: 52px; }
+  .refresh-button, .planet-jump-toggle { width: 44px; padding: 0; justify-content: center; }
+  .planet-jump-toggle { display: inline-flex; align-items: center; }
+  .planet-jump-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  .refresh-label, .settings-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .view-mode-switch { grid-area: views; display: flex; margin-top: 8px; }
+  .view-mode-button { flex: 1 1 0; min-height: 36px; padding: 4px 8px; }
+  #planet-jump-form { grid-area: jump; display: none; flex-wrap: wrap; margin-top: 8px; }
+  #planet-jump-form.is-open { display: flex; }
+  #planet-jump-form label { flex: 1 1 0; }
+  #planet-jump-form button { flex: none; }
+  #planet-jump-status { flex-basis: 100%; }
+  .status-line { grid-area: status; margin-top: 8px; gap: 2px 12px; }
+  .countdown { font-size: 0.8rem; }
+  .data-age { flex-basis: 100%; font-size: 0.8rem; }
+  .server-choice { width: 100%; }
+  .site-title h1, .view-mode-button { overflow-wrap: normal; white-space: nowrap; }
   .stat-tile-hero { grid-column: 1 / -1; }
   .stat-tile-hero .stat-value { font-size: 2.6rem; }
   .stat-value { font-size: 1.5rem; }
@@ -829,6 +873,12 @@ input[type="search"] {
   }
   .toolbar-buttons { display: none; }
   #planet-jump-status:empty { display: none; }
+}
+
+/* The smallest phones (320px): no emblem, tighter view buttons, so no word breaks in two. */
+@media (max-width: 340px) {
+  .site-emblem { display: none; }
+  .view-mode-button { padding: 4px 2px; font-size: 0.95rem; }
 }
 
 /* Windows high contrast and similar: keep meters and bars visible. */
@@ -991,6 +1041,19 @@ input[type="search"] {
 .alert-types label:has(input:disabled) { opacity: 0.6; }
 
 @media (max-width: 600px) {
+  /* Settings as an icon button in the header's top row (see SMALL SCREENS); opened, the panel
+     takes its own row. After the settings rules above, so these win. */
+  .settings-panel { grid-area: settings; border-top: 0; padding-top: 0; }
+  .settings-panel > summary {
+    position: absolute; top: 10px; right: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 44px; min-height: 44px; list-style: none;
+    border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised);
+  }
+  .settings-panel > summary::-webkit-details-marker { display: none; }
+  .settings-panel[open] > summary { border-color: var(--accent); color: var(--accent); }
+  .settings-icon { display: block; }
+  .settings-panel[open] { margin-top: 8px; border-top: 1px solid var(--border); }
   .event-item { grid-template-columns: 1.4em minmax(0, 1fr); }
   .event-item .event-text { grid-column: 2; }
 }

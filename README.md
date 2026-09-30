@@ -13,9 +13,11 @@ next, a galactic war map, gambit analysis per front and a field guide.
   connection; the field guide works without one. The Major Order in a downloaded copy can be
   worded wrong (see below).
 
-The page refreshes itself every minute. Settings (view mode, folded sections, your front, watched
-planets, alerts, and an optional Google Gemini key for AI summaries) are kept only in your own
-browser. Alerts are off until you turn them on in Settings, and only work while the page is open. Links can point
+The page refreshes itself every minute while you look at it (a tab in the background waits,
+unless alerts are on), and on your next visit it shows the last war status it saw straight away,
+labelled with its age, while it loads the new one. Settings (view mode, folded sections, your
+front, watched planets, alerts, and an optional Google Gemini key for AI summaries) and that
+saved war status are kept only in your own browser. Alerts are off until you turn them on in Settings, and only work while the page is open. Links can point
 at a planet, for example `https://mrhamster112.github.io/DropIntel/#planet=Heeth`.
 
 ## War history
@@ -48,7 +50,8 @@ from this repository's own war history.
 
 The page works out Major Order tasks by itself from the game's data. It names the enemy faction
 ("Kill 25.00M Terminids"), not the exact enemy the game names, so a task can be worded less
-exactly or wrong. The online version is corrected by hand in `major-order-fixes.js` in this
+exactly or wrong. When the game names one kind of enemy, the page adds "(exact enemy not
+identified)". The online version is corrected by hand in `major-order-fixes.js` in this
 repository (open it on GitHub and press the pencil; the file explains how). **A downloaded
 (offline) copy only has the corrections made before you downloaded it**, so its Major Order
 can be wrong: check the game, or use the online version.
