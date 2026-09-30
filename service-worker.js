@@ -17,6 +17,7 @@ const PAGE_FILES = [
   'style.css',
   'guide-data.js',
   'major-order-fixes.js',
+  'galactic-campaigns.js',
   'script.js',
   'manifest.webmanifest',
   'images/app-icons/icon-192.png',

@@ -261,6 +261,17 @@ main { outline: none; }
 .mo-note > summary { cursor: pointer; width: fit-content; padding: 6px 0; }
 .mo-note > p { margin: 4px 0 0; }
 .mo-task-unnamed { color: var(--text-muted); font-size: 0.85em; font-weight: 400; }
+.mo-kicker { margin: 0 0 2px; color: var(--accent); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.mo-game-briefing { margin: 4px 0 8px; font-size: 0.9rem; color: var(--text-secondary); }
+.mo-game-briefing > summary { cursor: pointer; width: fit-content; padding: 6px 0; color: var(--text-muted); }
+.mo-game-briefing p { margin: 6px 0 0; }
+.mo-campaign { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.mo-campaign-heading { margin: 0 0 6px; font-size: 1rem; }
+.campaign-orders { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; max-width: 40rem; }
+.campaign-order { display: grid; grid-template-columns: 1.4em minmax(0, 1fr) auto; align-items: baseline; gap: 6px; color: var(--text-secondary); }
+.campaign-order.is-current { color: var(--text-primary); font-weight: 600; }
+.campaign-order-state { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; }
+.mo-campaign-reward { margin: 0 0 6px; color: var(--text-secondary); }
 .mo-more { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
 
 /* ── METERS AND STATUS LINES ──────────────────────────────────────────────── */

@@ -156,11 +156,23 @@ function readBackupPercents(backupWarStatus, backupCampaigns) {
   return percentByIndex;
 }
 
+// Each order's name in the game ("Resource Acquisition"), from the war status's global events:
+// the order's own event carries its id. The /v1 and major-orders feeds only say "MAJOR ORDER".
+function readOrderNamesFromStatus(warStatus) {
+  const names = new Map();
+  for (const event of Array.isArray(warStatus?.globalEvents) ? warStatus.globalEvents : []) {
+    const orderId = numberOrNull(event?.assignmentId32);
+    if (orderId && typeof event.title === 'string' && event.title.trim()) names.set(orderId, event.title.trim());
+  }
+  return names;
+}
+
 // The primary API's feeds → a snapshot.
 export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations, warSeason, backupWarStatus, backupCampaigns }, takenAt) {
   if (!Array.isArray(campaigns)) throw new Error('The primary /campaigns is not a list');
   const owners = readOwnersFromBackupStatus(backupWarStatus);
   const backupPercentByIndex = readBackupPercents(backupWarStatus, backupCampaigns);
+  const orderNames = readOrderNamesFromStatus(backupWarStatus);
   const battles = [];
   for (const campaign of campaigns) {
     const planet = campaign?.planet;
@@ -200,7 +212,7 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
     allPlayers: numberOrNull(war?.statistics?.playerCount),
     orders: Array.isArray(assignments) ? assignments.map((order) => ({
       id: numberOrNull(order?.id),
-      title: String(order?.title || order?.briefing || 'Major Order'),
+      title: orderNames.get(numberOrNull(order?.id)) || String(order?.title || order?.briefing || 'Major Order'),
       expiresAt: toSeconds(order?.expiration),
       targets: readTaskTargets(order?.tasks),
       progress: (Array.isArray(order?.progress) ? order.progress : []).map(numberOrNull),
@@ -216,6 +228,7 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
   if (!Array.isArray(campaigns)) throw new Error('The backup /war/campaign is not a list');
   if (!Array.isArray(warStatus?.planetStatus)) throw new Error('The backup /war/status has no planets');
   const owners = readOwnersFromBackupStatus(warStatus);
+  const orderNames = readOrderNamesFromStatus(warStatus);
   const statusByIndex = new Map(warStatus.planetStatus.map((status) => [status?.index, status]));
   const campaignByIndex = new Map((warStatus.campaigns || []).map((campaign) => [campaign?.planetIndex, campaign]));
   const eventByIndex = new Map((warStatus.planetEvents || []).map((event) => [event?.planetIndex, event]));
@@ -257,7 +270,7 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
     allPlayers: warStatus.planetStatus.reduce((sum, status) => sum + (numberOrNull(status?.players) || 0), 0),
     orders: Array.isArray(majorOrders) ? majorOrders.map((order) => ({
       id: numberOrNull(order?.id32),
-      title: String(order?.setting?.overrideTitle || order?.setting?.overrideBrief || 'Major Order'),
+      title: orderNames.get(numberOrNull(order?.id32)) || String(order?.setting?.overrideTitle || order?.setting?.overrideBrief || 'Major Order'),
       expiresAt: numberOrNull(order?.expiresIn) !== null ? takenAt + Math.round(order.expiresIn) : null,
       targets: readTaskTargets(order?.setting?.tasks),
       progress: (Array.isArray(order?.progress) ? order.progress : []).map(numberOrNull),

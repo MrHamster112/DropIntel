@@ -30,6 +30,7 @@
   <link rel="stylesheet" href="style.css">
   <script src="guide-data.js" defer></script>
   <script src="major-order-fixes.js" defer></script>
+  <script src="galactic-campaigns.js" defer></script>
   <script src="script.js" defer></script>
 </head>
 <body data-current-view="simple">
@@ -154,11 +155,17 @@
       <h2 id="mo-heading">Major Order</h2>
       <p id="mo-empty" class="empty-state" style="display:none;">No Major Order right now. Any liberation or defense still helps the war.</p>
       <div id="mo-content">
+        <p id="mo-kicker" class="mo-kicker" hidden></p>
         <h3 id="mo-title" class="mo-title">—</h3>
         <p id="mo-timeLeft" class="mo-time-left"></p>
         <p id="mo-briefing" class="mo-briefing"></p>
+        <details id="mo-game-briefing" class="mo-game-briefing" hidden>
+          <summary>Full briefing from the game</summary>
+          <div id="mo-game-briefing-text"></div>
+        </details>
         <ol id="mo-tasks" class="mo-tasks"></ol>
         <p id="mo-reward" class="mo-reward"></p>
+        <div id="mo-campaign" class="mo-campaign" hidden></div>
         <p id="mo-more" class="mo-more"></p>
         <details class="section-hint mo-note">
           <summary>How is this worded?</summary>

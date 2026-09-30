@@ -65,3 +65,7 @@ identified)". The online version is corrected by hand in `major-order-fixes.js` 
 repository (open it on GitHub and press the pencil; the file explains how). **A downloaded
 (offline) copy only has the corrections made before you downloaded it**, so its Major Order
 can be wrong: check the game, or use the online version.
+
+The order's name and its full briefing come from the game's own data. The Galactic Campaign it
+belongs to (for example "Armored Eagle", order 2 of 2) isn't in the war data, so it is typed in
+by hand in `galactic-campaigns.js` in this repository, and can lag behind the game.

@@ -66,6 +66,8 @@ const TASK_VALUE_TYPE = { FACTION_ID: 1, TARGET_AMOUNT: 3, UNIT_ID: 4, LOCATION_
 
 // Shown after a task that names a specific enemy the page can't name (see TASK_VALUE_TYPE).
 const UNNAMED_ENEMY_NOTE = '(exact enemy not identified)';
+// The same note when the game's full briefing, which usually names the enemy, is on the card too.
+const UNNAMED_ENEMY_NOTE_SEE_BRIEFING = '(exact enemy not identified; see the full briefing)';
 
 // What value type 11 says value type 12 is. A galaxy-wide "kill 25M Terminids"
 // carries location type 0 and index 0, and index 0 there is not Super Earth.
@@ -225,6 +227,7 @@ const apiData = {
   newsDispatches: [],         // latest news from High Command
   spaceStations: [],          // the DSS (rich from primary API, basic from backup)
   planetActiveEffects: [],    // [{index, galacticEffectId}] — fleets, buffs, debuffs
+  gameOrderTextById: {},      // {orderId: {title, briefing}}: each order's name and full briefing in the game
   currentWarTimeSeconds: 0,   // game clock at warTimeCapturedAtTimestamp
   warTimeCapturedAtTimestamp: null, // Date.now() when currentWarTimeSeconds was read
   planetHistoryByIndex: loadPlanetHistory(Date.now()), // samples for trend maths
@@ -802,11 +805,12 @@ async function downloadSupplementalFeeds() {
   return isPlainObject(freshBackupStatus) ? freshBackupStatus : null;
 }
 
-// Copies effects, the war clock and (if primary has none) the DSS out of the
-// cached backup /war/status into apiData.
+// Copies effects, the war clock, the orders' names and briefings and (if primary has none) the
+// DSS out of the cached backup /war/status into apiData.
 function applyCachedBackupWarStatus() {
   if (!cachedBackupWarStatus) return;
 
+  apiData.gameOrderTextById = readGameOrderTexts(cachedBackupWarStatus.globalEvents);
   apiData.planetActiveEffects = asArray(cachedBackupWarStatus.planetActiveEffects)
     .filter(effect => isPlainObject(effect) && isFiniteNumber(effect.index));
   apiData.currentWarTimeSeconds = isFiniteNumber(cachedBackupWarStatus.time) ? cachedBackupWarStatus.time : 0;
@@ -817,6 +821,30 @@ function applyCachedBackupWarStatus() {
   if (primaryDssIsMissing) {
     apiData.spaceStations = convertBackupSpaceStations(cachedBackupWarStatus.spaceStations);
   }
+}
+
+// Each order's name and full briefing as the game shows them ("Resource Acquisition", and the
+// brief that names the exact enemies), from the war status's global events: an order's own event
+// carries its id. The order feeds only say "MAJOR ORDER" and a one-line brief.
+function readGameOrderTexts(globalEvents) {
+  const textById = {};
+  for (const event of asArray(globalEvents)) {
+    if (!isPlainObject(event) || !isFiniteNumber(event.assignmentId32) || event.assignmentId32 === 0) continue;
+    const title = typeof event.title === 'string' ? event.title.trim() : '';
+    const briefing = typeof event.message === 'string' ? event.message.trim() : '';
+    if (title || briefing) textById[event.assignmentId32] = { title, briefing };
+  }
+  return textById;
+}
+
+// An order's name: the game's own ("Resource Acquisition") when known, else the feed's title.
+function getOrderTitle(assignment) {
+  return apiData.gameOrderTextById[assignment.id]?.title || assignment.title || 'Major Order';
+}
+
+// An order's full briefing from the game, or '' when the war status hasn't given one.
+function getGameOrderBriefing(assignment) {
+  return apiData.gameOrderTextById[assignment.id]?.briefing || '';
 }
 
 // ── POST-PROCESSING ──────────────────────────────────────────────────────────
@@ -2985,7 +3013,7 @@ function describeAssignmentTask(task, progressValue) {
   const description = describeAssignmentTaskAutomatically(task, progressValue);
   // a fix copied from the card with the unnamed-enemy note still matches
   const fix = fixes.taskText.find(entry =>
-    entry.pageSays.trim().replace(UNNAMED_ENEMY_NOTE, '').trim() === description.sentence);
+    entry.pageSays.replace(UNNAMED_ENEMY_NOTE_SEE_BRIEFING, '').replace(UNNAMED_ENEMY_NOTE, '').trim() === description.sentence);
   if (fix) {
     description.automaticSentence = description.sentence;
     description.sentence = fix.showInstead.trim();
@@ -3164,7 +3192,17 @@ async function downloadAllData(onPartialDataReady) {
   // Runs between the primary's two waves; a rendering error must never be
   // mistaken for an API failure and trigger the fallback.
   const handleFastWaveReady = () => {
-    startSupplementalDownload();
+    // The war status (effects, war clock, the orders' names) is drawn as soon as it lands, not
+    // only after the heavy wave's rate-limit wait; it is applied again at the end of the cycle.
+    startSupplementalDownload().then(freshBackupStatus => {
+      if (!freshBackupStatus || !onPartialDataReady) return;
+      rememberBackupWarStatus(freshBackupStatus, Date.now());
+      try {
+        onPartialDataReady();
+      } catch (error) {
+        console.error('Partial render failed:', error);
+      }
+    });
     try {
       processFreshBattleData();
       if (onPartialDataReady) onPartialDataReady();
@@ -3724,10 +3762,15 @@ function renderMajorOrder() {
   const assignment = apiData.assignments[0];
   const secondsLeft = getSecondsUntil(assignment.expiration);
 
-  putTextInElement('mo-title', assignment.title || 'Major Order');
+  putTextInElement('mo-title', getOrderTitle(assignment));
   putTextInElement('mo-timeLeft', secondsLeft === null ? 'No deadline given'
     : secondsLeft === 0 ? 'Deadline passed' : `${formatDuration(secondsLeft)} left`);
   putTextInElement('mo-briefing', stripGameMarkup(assignment.briefing));
+  const gameBriefing = getGameOrderBriefing(assignment);
+  const gameBriefingBox = document.getElementById('mo-game-briefing');
+  if (gameBriefingBox) gameBriefingBox.hidden = gameBriefing === '';
+  replaceContent('mo-game-briefing-text', buildGameMessage(gameBriefing));
+  const unnamedEnemyNote = gameBriefing ? UNNAMED_ENEMY_NOTE_SEE_BRIEFING : UNNAMED_ENEMY_NOTE;
 
   replaceContent('mo-tasks', assignment.tasks.map((task, taskPosition) => {
     const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
@@ -3740,7 +3783,7 @@ function renderMajorOrder() {
         described.isComplete
           ? buildElement('span', { className: 'status-icon', text: '✔', attributes: { 'aria-hidden': 'true' } }) : null,
         ...buildTaskSentenceWithPlanet(described.sentence, taskPlanet),
-        described.enemyIsUnnamed ? buildElement('span', { className: 'mo-task-unnamed', text: ` ${UNNAMED_ENEMY_NOTE}` }) : null,
+        described.enemyIsUnnamed ? buildElement('span', { className: 'mo-task-unnamed', text: ` ${unnamedEnemyNote}` }) : null,
       ]),
       described.progressPercent !== null ? buildMeter(described.progressPercent, 'Complete', statusName) : null,
       buildElement('p', { className: 'mo-task-progress',
@@ -3755,11 +3798,12 @@ function renderMajorOrder() {
 
   const rewardText = describeReward(assignment.reward);
   putTextInElement('mo-reward', rewardText ? `Reward: ${rewardText}` : '');
+  renderMajorOrderCampaign(assignment);
 
   const otherOrders = apiData.assignments.slice(1);
   putTextInElement('mo-more', otherOrders.length === 0 ? '' : 'Also active: ' + otherOrders.map(order => {
     const orderSecondsLeft = getSecondsUntil(order.expiration);
-    return `${order.title || 'Order'}${orderSecondsLeft ? ` (${formatDuration(orderSecondsLeft)} left)` : ''}`;
+    return `${getOrderTitle(order)}${orderSecondsLeft ? ` (${formatDuration(orderSecondsLeft)} left)` : ''}`;
   }).join(' · '));
 }
 
@@ -4131,7 +4175,7 @@ function renderAssignmentsInFull() {
     replaceContent('output-assignments', [buildElement('p', { className: 'empty-state', text: 'No orders active.' })]);
     return;
   }
-  replaceContent('output-assignments', [buildMajorOrderFixesNote(), ...apiData.assignments.map(assignment => {
+  replaceContent('output-assignments', [buildMajorOrderFixesNote(), buildGalacticCampaignsNote(), ...apiData.assignments.map(assignment => {
     const rows = assignment.tasks.map((task, taskPosition) => {
       const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
       const rawValues = asArray(task.valueTypes)
@@ -4141,18 +4185,31 @@ function renderAssignmentsInFull() {
       return [String(taskPosition + 1), sentence, String(task.type ?? '—'), rawValues || '—',
               described.progressText, formatPercent(described.progressPercent)];
     });
+    const campaignPlace = findCampaignForOrder(assignment);
+    const gameBriefing = getGameOrderBriefing(assignment);
     return buildElement('article', { className: 'order-detail' }, [
-      buildElement('h3', { text: assignment.title || 'Order' }),
+      buildElement('h3', { text: getOrderTitle(assignment) }),
       buildFactList([
         ['Deadline', formatDeadline(assignment.expiration)],
         ['Reward', describeReward(assignment.reward) || null],
         ['Order ID', String(assignment.id ?? '—')],
+        ['Galactic Campaign', campaignPlace
+          ? `${campaignPlace.campaign.name}, order ${campaignPlace.position + 1} of ${campaignPlace.campaign.orderCount} (from galactic-campaigns.js)` : null],
       ], 'fact-list fact-list-grid'),
-      assignment.briefing ? buildElement('div', { className: 'order-briefing' }, buildGameMessage(assignment.briefing)) : null,
+      (gameBriefing || assignment.briefing)
+        ? buildElement('div', { className: 'order-briefing' }, buildGameMessage(gameBriefing || assignment.briefing)) : null,
       rows.length ? buildTable(`Tasks for ${assignment.title || 'this order'}`,
         ['#', 'Task', 'Type', 'Raw values', 'Progress', 'Done'], rows) : null,
     ]);
   })]);
+}
+
+// A warning when galactic-campaigns.js couldn't be read (a mistake in it), so the owner notices;
+// nothing otherwise.
+function buildGalacticCampaignsNote() {
+  if (getGalacticCampaigns().readable) return null;
+  return buildStatusLine({ status: 'warning', icon: '⚠',
+    text: 'galactic-campaigns.js couldn\'t be read (a missing comma or quote?), so the Major Order card shows no campaign.' });
 }
 
 // Where to correct a task the page words wrong, and a warning when the fixes
@@ -6445,6 +6502,152 @@ function describeMajorOrderPaceCaveat(paceMinutes) {
   return caveat;
 }
 
+// ── GALACTIC CAMPAIGNS ───────────────────────────────────────────────────────
+// In the game, Major Orders come in Galactic Campaigns ("Armored Eagle"): a few orders in a row,
+// and a campaign reward for winning a majority (or all) of them. The war feeds give each order's
+// name (readGameOrderTexts) but not its campaign: checked on 30 Sep 2026 against ArrowHead's raw
+// orders, war status and war info. So the owner writes the campaigns in galactic-campaigns.js,
+// and the Major Order card shows the current order's campaign and whether its reward is in reach.
+
+const CAMPAIGN_REWARD_RULES = ['majority', 'all'];
+const CAMPAIGN_ORDER_RESULTS = ['won', 'lost'];
+
+// The campaigns from galactic-campaigns.js, cleaned. An entry of the wrong shape is left out;
+// readable is false when the file is missing or has a mistake (it then never loaded).
+function getGalacticCampaigns() {
+  const written = typeof GALACTIC_CAMPAIGNS !== 'undefined' && Array.isArray(GALACTIC_CAMPAIGNS) ? GALACTIC_CAMPAIGNS : null;
+  const campaigns = asArray(written).filter(isPlainObject).map(entry => {
+    const orders = asArray(entry.orders)
+      .filter(order => isPlainObject(order) && typeof order.name === 'string' && order.name.trim() !== '')
+      .map(order => ({ name: order.name.trim(), result: CAMPAIGN_ORDER_RESULTS.includes(order.result) ? order.result : null }));
+    return {
+      name: typeof entry.name === 'string' ? entry.name.trim() : '',
+      reward: typeof entry.reward === 'string' && entry.reward.trim() ? entry.reward.trim() : null,
+      rewardNeeds: CAMPAIGN_REWARD_RULES.includes(entry.rewardNeeds) ? entry.rewardNeeds : 'majority',
+      orderCount: Number.isInteger(entry.orderCount) && entry.orderCount >= orders.length ? entry.orderCount : orders.length,
+      orders,
+    };
+  }).filter(campaign => campaign.name !== '' && campaign.orders.length > 0);
+  return { readable: written !== null, campaigns };
+}
+
+// An order name for comparing: case and spacing don't matter.
+function normalizeOrderName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+// The campaign that lists this order by its name in the game, and the order's place in it:
+// { campaign, position }. The last campaign in the file wins. Null when no campaign lists it.
+function findCampaignForOrder(assignment) {
+  const orderName = normalizeOrderName(apiData.gameOrderTextById[assignment.id]?.title);
+  if (!orderName) return null;
+  const campaigns = getGalacticCampaigns().campaigns;
+  for (let campaignPosition = campaigns.length - 1; campaignPosition >= 0; campaignPosition--) {
+    const position = campaigns[campaignPosition].orders.findIndex(order => normalizeOrderName(order.name) === orderName);
+    if (position >= 0) return { campaign: campaigns[campaignPosition], position };
+  }
+  return null;
+}
+
+// How many orders the campaign reward needs: more than half of them, or all.
+function countCampaignWinsNeeded(campaign) {
+  return campaign.rewardNeeds === 'all' ? campaign.orderCount : Math.floor(campaign.orderCount / 2) + 1;
+}
+
+// The whole order's outlook from its tasks' paces: 'won' (every task done), 'behind' (a task
+// won't be done in time at the current pace), 'on-pace', or 'not-enough-data'. Every task has
+// to be done, as in the game's orders so far.
+function summarizeMajorOrderPace(assignment, nowTimestamp = Date.now()) {
+  if (assignment.tasks.length === 0) return 'not-enough-data';
+  const statuses = assignment.tasks.map((task, taskPosition) => describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp).status);
+  if (statuses.every(status => status === 'done')) return 'won';
+  if (statuses.includes('behind')) return 'behind';
+  if (statuses.includes('not-enough-data')) return 'not-enough-data';
+  return 'on-pace';
+}
+
+// Where the campaign stands while the order at `position` is fought: orders won and lost, the
+// wins the reward needs, and a status line {status, icon, text} with the current order's pace.
+function describeCampaignOutlook(campaign, position, assignment, nowTimestamp = Date.now()) {
+  const won = campaign.orders.filter(order => order.result === 'won').length;
+  const lost = campaign.orders.filter(order => order.result === 'lost').length;
+  const needed = countCampaignWinsNeeded(campaign);
+  const ordersLeft = Math.max(0, campaign.orderCount - won - lost); // the current order included
+  const orderPace = summarizeMajorOrderPace(assignment, nowTimestamp);
+  const outlook = { won, lost, needed, ordersLeft, orderPace };
+  const withLine = (status, icon, text) => ({ ...outlook, status, icon, text });
+
+  const unfilled = campaign.orders.slice(0, position).filter(order => !order.result).map(order => order.name);
+  if (unfilled.length > 0) {
+    return withLine('neutral', '?', `Can't tell yet: the result of ${unfilled.join(' and ')} isn't filled in.`);
+  }
+  if (won >= needed) {
+    return withLine('good', '✔', `The campaign reward is secured: ${won} of ${campaign.orderCount} orders won (${needed} needed).`);
+  }
+  if (won + ordersLeft < needed) {
+    return withLine('critical', '✖', `The campaign reward is out of reach: it needs ${needed} wins, and at most ${won + ordersLeft} are still possible.`);
+  }
+  const stillNeeded = needed - won;
+  const lead = stillNeeded === ordersLeft
+    ? (ordersLeft === 1 ? 'This order decides the campaign reward: it has to be won.' : `Every order left has to be won for the campaign reward (${ordersLeft} more).`)
+    : `The campaign reward needs ${stillNeeded} more win${stillNeeded === 1 ? '' : 's'} from the ${ordersLeft} orders left.`;
+  if (orderPace === 'won') {
+    return withLine('good', '✔', `${lead} Every task of this order is done.`);
+  }
+  if (orderPace === 'on-pace') {
+    return withLine('good', '✔', `${lead} At the current pace, it will be won in time (an estimate).`);
+  }
+  if (orderPace === 'behind') {
+    return withLine('warning', '▲', `${lead} At the current pace, it won't be won in time (an estimate).`);
+  }
+  return withLine('neutral', '…', `${lead} Not enough data yet to say whether it will be won.`);
+}
+
+// One order in the campaign's list: its number, name and state.
+function buildCampaignOrderItem(campaign, orderPosition, currentPosition) {
+  const order = campaign.orders[orderPosition];
+  const state = order?.result === 'won' ? { status: 'good', icon: '✔', text: 'Won' }
+    : order?.result === 'lost' ? { status: 'critical', icon: '✖', text: 'Lost' }
+    : orderPosition === currentPosition ? { status: 'warning', icon: '●', text: 'This order, in progress' }
+    : orderPosition < currentPosition ? { status: 'neutral', icon: '?', text: 'Result not filled in' }
+    : { status: 'neutral', icon: '○', text: order ? 'Next' : 'Not revealed yet' };
+  return buildElement('li', { className: `campaign-order status-${state.status}${orderPosition === currentPosition ? ' is-current' : ''}` }, [
+    buildElement('span', { className: 'status-icon', text: state.icon, attributes: { 'aria-hidden': 'true' } }),
+    buildElement('span', { className: 'campaign-order-name', text: `${orderPosition + 1}. ${order ? order.name : 'Next order'}` }),
+    buildElement('span', { className: 'campaign-order-state', text: state.text }),
+  ]);
+}
+
+// The current order's campaign: its name and place above the order's title, and a box with the
+// orders so far, the reward and the outlook → #mo-kicker, #mo-campaign (hidden without one)
+function renderMajorOrderCampaign(assignment, nowTimestamp = Date.now()) {
+  const kicker = document.getElementById('mo-kicker');
+  const box = document.getElementById('mo-campaign');
+  if (!kicker || !box) return;
+  const found = findCampaignForOrder(assignment);
+  kicker.hidden = !found;
+  box.hidden = !found;
+  if (!found) {
+    replaceContent('mo-campaign', []);
+    return;
+  }
+  const { campaign, position } = found;
+  const needed = countCampaignWinsNeeded(campaign);
+  kicker.textContent = `${campaign.name} · order ${position + 1} of ${campaign.orderCount}`;
+  const rule = campaign.rewardNeeds === 'all'
+    ? `winning all ${campaign.orderCount} orders`
+    : `winning a majority of its orders (${needed} of ${campaign.orderCount})`;
+  replaceContent('mo-campaign', [
+    buildElement('h4', { className: 'mo-campaign-heading', text: `Galactic Campaign: ${campaign.name}` }),
+    buildElement('ol', { className: 'campaign-orders' },
+      Array.from({ length: campaign.orderCount }, (unused, orderPosition) => buildCampaignOrderItem(campaign, orderPosition, position))),
+    buildElement('p', { className: 'mo-campaign-reward',
+      text: campaign.reward ? `Campaign reward: ${campaign.reward}, for ${rule}.` : `The campaign reward is for ${rule}.` }),
+    buildStatusLine(describeCampaignOutlook(campaign, position, assignment, nowTimestamp)),
+    buildElement('p', { className: 'section-hint', text: 'The campaign is typed in by hand from the game\'s Active Campaign screen, so it can lag behind the game.' }),
+  ]);
+}
+
 // ── PLANET DRAWER ────────────────────────────────────────────────────────────
 // Everything about one planet in one panel, opened from the map, the gambit panel, the
 // simple-mode cards and Major Order tasks. It sits beside the page on a wide screen and is a
@@ -7780,6 +7983,9 @@ function buildLastKnownGoodSnapshot() {
     currentDataSource: apiData.currentDataSource,
     warStatistics: apiData.warStatistics,
     assignments: apiData.assignments,
+    gameOrderTextById: Object.fromEntries(apiData.assignments
+      .filter(assignment => apiData.gameOrderTextById[assignment.id])
+      .map(assignment => [assignment.id, apiData.gameOrderTextById[assignment.id]])),
     activeCampaigns: apiData.activeCampaigns.map(campaign => ({
       id: campaign.id, type: campaign.type, faction: campaign.faction, planet: trimPlanetForSnapshot(campaign.planet),
     })),
@@ -7808,6 +8014,8 @@ function restoreLastKnownGoodSnapshot(nowTimestamp = Date.now()) {
 
   apiData.warStatistics = isPlainObject(snapshot.warStatistics) ? snapshot.warStatistics : null;
   apiData.assignments = asArray(snapshot.assignments).map(normalizeAssignment).filter(Boolean);
+  apiData.gameOrderTextById = Object.fromEntries(Object.entries(isPlainObject(snapshot.gameOrderTextById) ? snapshot.gameOrderTextById : {})
+    .filter(([, text]) => isPlainObject(text) && typeof text.title === 'string' && typeof text.briefing === 'string'));
   apiData.activeCampaigns = asArray(snapshot.activeCampaigns).map(normalizeCampaign).filter(Boolean);
   apiData.defenseEvents = apiData.activeCampaigns.map(campaign => campaign.planet).filter(planet => planet.event);
   apiData.newsDispatches = asArray(snapshot.newsDispatches).map(normalizeDispatch).filter(Boolean);
