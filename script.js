@@ -7656,6 +7656,98 @@ function wireAlertSettings() {
   window.addEventListener('focus', markRead);
 }
 
+// ── INSTALL AS AN APP ────────────────────────────────────────────────────────
+// With manifest.webmanifest and service-worker.js, Chrome and Edge can install the page: on
+// Android it goes on the home screen, on Windows in the Start menu and taskbar, and it opens in
+// its own window. The browser's own install offers keep working; Settings adds an Install button
+// when the browser offers one (beforeinstallprompt), and otherwise says where to look. A copy
+// opened from disk can't be installed, so it registers nothing.
+
+const SERVICE_WORKER_FILE = 'service-worker.js';
+
+let deferredInstallPrompt = null; // the browser's install offer, kept for the Install button
+
+// True when the page came from a web address (not from disk), the only place installing works.
+function isServedFromTheWeb() {
+  return window.location.protocol === 'https:' || window.location.protocol === 'http:';
+}
+
+// Registers the service worker after the page has loaded, so it never competes with the first
+// war download. Returns false where it can't (from disk, or a browser without service workers).
+function registerServiceWorker() {
+  if (!isServedFromTheWeb() || !('serviceWorker' in window.navigator)) return false;
+  const register = () => window.navigator.serviceWorker.register(SERVICE_WORKER_FILE)
+    .catch(error => console.warn('Service worker not registered:', error));
+  if (document.readyState === 'complete') register();
+  else window.addEventListener('load', register, { once: true });
+  return true;
+}
+
+// True inside the installed app's own window.
+function isRunningAsInstalledApp() {
+  const standalone = typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches;
+  return standalone || window.navigator.standalone === true; // navigator.standalone: iPhone home screen
+}
+
+// What Settings says about installing, and whether the Install button shows.
+function describeInstallOption() {
+  if (isRunningAsInstalledApp()) {
+    return { canPrompt: false, text: 'You are using DropIntel as an installed app.' };
+  }
+  if (!isServedFromTheWeb()) {
+    return { canPrompt: false, text: 'This copy was opened from your computer, so it can\'t be installed. To install it, open mrhamster112.github.io/DropIntel in Chrome or Edge.' };
+  }
+  if (deferredInstallPrompt) {
+    return { canPrompt: true, text: 'Puts DropIntel on your home screen (Android) or in the Start menu and taskbar (Windows), in its own window. It is this same page: no app store, nothing else to download.' };
+  }
+  return { canPrompt: false, text: 'In Chrome or Edge: the install icon in the address bar, or the browser menu, then "Install app" or "Add to Home screen". On an iPhone: Safari\'s Share button, then "Add to Home Screen". Already installed? Open it from your home screen or Start menu.' };
+}
+
+// Shows the install option in Settings → #install-app-button, #install-app-hint
+function renderInstallOption() {
+  const option = describeInstallOption();
+  const button = document.getElementById('install-app-button');
+  if (button) button.hidden = !option.canPrompt;
+  putTextInElement('install-app-hint', option.text);
+}
+
+// Keeps the browser's install offer for the Install button. It doesn't cancel the browser's own
+// offer (Chrome's banner on Android): that one helps people find it too.
+function handleBeforeInstallPrompt(event) {
+  deferredInstallPrompt = event;
+  renderInstallOption();
+}
+
+// The Install button: opens the browser's install dialog (an offer works once). Returns
+// 'accepted', 'dismissed', or null when there was no offer.
+async function installApp() {
+  const installPrompt = deferredInstallPrompt;
+  if (!installPrompt) return null;
+  deferredInstallPrompt = null;
+  try {
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    return choice?.outcome ?? null;
+  } catch {
+    return null;
+  } finally {
+    renderInstallOption();
+  }
+}
+
+// Wires the install option and registers the service worker (called once from startApp).
+function wireInstallOption() {
+  window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    renderInstallOption();
+  });
+  const button = document.getElementById('install-app-button');
+  if (button) button.addEventListener('click', () => installApp());
+  renderInstallOption();
+  registerServiceWorker();
+}
+
 // ── LAST-KNOWN-GOOD SNAPSHOT ─────────────────────────────────────────────────
 // After every good refresh the page saves a small copy of what simple mode shows (orders,
 // battles, war statistics, the latest dispatch). The next visit draws it at once, labelled
@@ -7836,6 +7928,7 @@ function startApp() {
   // after the first render, so a link to a section or guide entry has something to show
   wireSettingsAndLinks();
   wireAlertSettings();
+  wireInstallOption();
   scheduleNextRefresh();
   refreshEverythingNow();
   refreshSharedHistory();

@@ -1,0 +1,23 @@
+{
+  "id": "./",
+  "name": "DropIntel",
+  "short_name": "DropIntel",
+  "description": "A fan-made war tracker for Helldivers 2: the Major Order, planets that need you, and defenses at risk.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b0d11",
+  "theme_color": "#f5c518",
+  "categories": ["games", "utilities"],
+  "icons": [
+    { "src": "images/app-icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "images/app-icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "images/app-icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Advanced: map, gambits, graphs", "short_name": "Advanced", "url": "./#view=advanced" },
+    { "name": "Field guide", "short_name": "Guide", "url": "./#view=guide" }
+  ]
+}

@@ -25,6 +25,8 @@
   <meta name="theme-color" content="#f5c518" />
   <link rel="canonical" href="https://mrhamster112.github.io/DropIntel/" />
   <link rel="icon" href="images/faction-icons-drawn/Super%20Earth.svg" type="image/svg+xml" />
+  <!-- installable as an app (Chrome, Edge): the manifest here, service-worker.js registered by script.js -->
+  <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="style.css">
   <script src="guide-data.js" defer></script>
   <script src="major-order-fixes.js" defer></script>
@@ -95,6 +97,11 @@
           <label><input type="checkbox" data-alert-type="ownerChange"> Any planet is liberated or lost</label>
         </div>
         <p id="alerts-status" class="section-hint" aria-live="polite"></p>
+      </fieldset>
+      <fieldset class="install-settings">
+        <legend>Install as an app</legend>
+        <button type="button" id="install-app-button" hidden>Install DropIntel</button>
+        <p id="install-app-hint" class="section-hint" aria-live="polite"></p>
       </fieldset>
       <p class="settings-links"><a href="#section=raw-data">Raw data (advanced mode)</a></p>
       <details class="llm-settings" id="llm-settings">

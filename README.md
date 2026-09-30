@@ -20,6 +20,16 @@ front, watched planets, alerts, and an optional Google Gemini key for AI summari
 saved war status are kept only in your own browser. Alerts are off until you turn them on in Settings, and only work while the page is open. Links can point
 at a planet, for example `https://mrhamster112.github.io/DropIntel/#planet=Heeth`.
 
+## Install it as an app
+
+On Android and Windows, DropIntel can be installed like an app from Chrome or Edge: it goes on
+your home screen, or in the Start menu and taskbar, and opens in its own window. Open
+https://mrhamster112.github.io/DropIntel/, then use the browser's install icon in the address
+bar or its menu ("Install app" or "Add to Home screen"), or the Install button in the page's
+Settings. It is the same page, with nothing else to download, and it can start without a
+connection, showing the last war status it saw. On an iPhone, use Safari's Share button, then
+"Add to Home Screen". A downloaded ZIP copy can't be installed.
+
 ## War history
 
 Every 15 minutes a GitHub Action in this repository records the war (planet progress, players

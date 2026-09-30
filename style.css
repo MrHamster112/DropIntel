@@ -1039,6 +1039,9 @@ input[type="search"] {
 .alert-master { font-weight: 600; }
 .alert-types { display: grid; gap: 4px; margin: 6px 0 4px 22px; }
 .alert-types label:has(input:disabled) { opacity: 0.6; }
+.install-settings { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 10px; margin: 0; display: grid; gap: 6px; justify-items: start; }
+.install-settings legend { color: var(--text-secondary); font-weight: 700; padding: 0 4px; }
+.install-settings .section-hint { margin: 0; }
 
 @media (max-width: 600px) {
   /* Settings as an icon button in the header's top row (see SMALL SCREENS); opened, the panel
