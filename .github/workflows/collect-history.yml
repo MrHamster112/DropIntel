@@ -56,7 +56,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git checkout --quiet --orphan war-history
           git add history.json
-          # ArrowHead's raw orders and war status, newest only (see RAW DETAILS in the collector)
-          if [ -f latest-raw.json ]; then git add latest-raw.json; fi
           git commit --quiet -m "War history $(date -u +%Y-%m-%dT%H:%MZ)"
           git push --quiet --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" war-history

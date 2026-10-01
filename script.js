@@ -27,6 +27,7 @@ const DONATION_URL = 'https://buycoffee.to/dropintel';
 
 const REFRESH_INTERVAL_SECONDS = 60;
 const RATE_LIMIT_WINDOW_MILLISECONDS = 10500;       // primary API allows ~5 requests / 10s
+const NEWS_DISPATCH_LIMIT = 10;                     // the page keeps only the newest dispatches
 const HEAVY_FEEDS_REFRESH_EVERY_N_CYCLES = 5;
 const FETCH_TIMEOUT_MILLISECONDS = 15000;           // a hung request must not stall the loop forever
 
@@ -602,7 +603,7 @@ async function downloadEverythingFromPrimaryApi(onFastWaveReady) {
       heavyFeedCache.planetList = planetList.map(normalizePlanet).filter(Boolean);
     }
     if (Array.isArray(dispatchList)) {
-      heavyFeedCache.dispatchList = dispatchList.map(normalizeDispatch).filter(Boolean);
+      heavyFeedCache.dispatchList = keepNewestDispatches(dispatchList.map(normalizeDispatch).filter(Boolean));
     }
     if (Array.isArray(spaceStations)) {
       heavyFeedCache.spaceStations = spaceStations.filter(isPlainObject);
@@ -610,6 +611,16 @@ async function downloadEverythingFromPrimaryApi(onFastWaveReady) {
 
     applyHeavyFeedCacheToApiData();
   }
+}
+
+// The newest NEWS_DISPATCH_LIMIT dispatches, newest first. The primary's /dispatches lists every
+// dispatch the community API holds, not only the latest ones.
+function keepNewestDispatches(dispatches) {
+  const publishedAt = dispatch => {
+    const timestamp = Date.parse(dispatch.published || '');
+    return isNaN(timestamp) ? -Infinity : timestamp;
+  };
+  return [...dispatches].sort((first, second) => publishedAt(second) - publishedAt(first)).slice(0, NEWS_DISPATCH_LIMIT);
 }
 
 // Copies the cached heavy feeds (planets, news, DSS) into apiData.
@@ -750,7 +761,7 @@ async function downloadEverythingFromBackupApi() {
   apiData.newsDispatches = asArray(newsList)
     .filter(isPlainObject)
     .sort((first, second) => (second.published || 0) - (first.published || 0))
-    .slice(0, 10)
+    .slice(0, NEWS_DISPATCH_LIMIT)
     .map(newsItem => ({
       id: newsItem.id,
       message: typeof newsItem.message === 'string' ? newsItem.message : '',
@@ -7747,6 +7758,7 @@ const WATCHLIST_LIMIT = 20;
 const ALERT_SETTINGS_STORAGE_KEY = 'hd2_alerts';
 const ALERTS_SEEN_STORAGE_KEY = 'hd2_alerts_seen';
 const ALERTS_SEEN_LIMIT = 400;
+const ALERTS_DISPATCH_BASELINE_STORAGE_KEY = 'hd2_alerts_newest_dispatch';
 const ALERT_TYPES = ['newOrder', 'newDispatch', 'watchedProgress', 'watchedDefense', 'ownerChange'];
 const ALERT_PROGRESS_STEPS = [25, 50, 75];
 const SIMPLE_EVENT_COUNT = 5;
@@ -7882,6 +7894,25 @@ function readSeenAlerts() {
 }
 
 let seenAlertKeys = readSeenAlerts();
+
+// When the newest dispatch already seen with alerts on was published (a timestamp), or null
+// before the first check. Only dispatches published after it are announced: the war API
+// sometimes lists older dispatches again (1 Oct 2026: five old ones read as new), and an id the
+// page hasn't seen yet doesn't make a dispatch new.
+function readDispatchAlertBaseline() {
+  const stored = Number(readStoredValue(ALERTS_DISPATCH_BASELINE_STORAGE_KEY));
+  return Number.isFinite(stored) && stored > 0 ? stored : null;
+}
+
+let dispatchAlertBaseline = readDispatchAlertBaseline();
+
+// Moves the baseline up to the newest dated dispatch the page has now.
+function advanceDispatchAlertBaseline() {
+  const newestTimestamp = getNewestDispatch()?.publishedTimestamp;
+  if (!isFiniteNumber(newestTimestamp) || (dispatchAlertBaseline !== null && newestTimestamp <= dispatchAlertBaseline)) return;
+  dispatchAlertBaseline = newestTimestamp;
+  writeStoredValue(ALERTS_DISPATCH_BASELINE_STORAGE_KEY, String(newestTimestamp));
+}
 let unreadAlertCount = 0;
 let recentAlerts = [];
 let previousOwnerByPlanetIndex = null;
@@ -7915,6 +7946,9 @@ function collectAlertCandidates(nowTimestamp = Date.now()) {
   }
   for (const dispatch of apiData.newsDispatches) {
     if (dispatch.id === undefined || dispatch.id === null) continue;
+    // new only when published after the newest dispatch already seen (dispatchAlertBaseline)
+    const publishedTimestamp = Date.parse(dispatch.published || '');
+    if (dispatchAlertBaseline === null || isNaN(publishedTimestamp) || publishedTimestamp <= dispatchAlertBaseline) continue;
     const firstLine = stripGameMarkup(dispatch.message).split('\n').find(line => line.trim()) || 'News from High Command';
     candidates.push({ key: `dispatch:${dispatch.id}`, type: 'newDispatch', planetIndex: null, text: `New dispatch: ${firstLine.trim().slice(0, 100)}` });
   }
@@ -7998,6 +8032,7 @@ function checkForAlerts(nowTimestamp = Date.now()) {
   const announced = candidates.filter(candidate => candidate.type !== 'watchedProgress'
     || !candidates.some(other => other.type === 'watchedProgress' && other.planetIndex === candidate.planetIndex && other.step > candidate.step));
   markAlertsSeen(candidates);
+  advanceDispatchAlertBaseline();
   for (const alert of announced) deliverAlert(alert, nowTimestamp);
   if (announced.length > 0) renderSimpleAlerts();
   return announced;
@@ -8041,6 +8076,7 @@ async function changeAlertsEnabled(enabled) {
     if (apiData.planets.length > 0) {
       markAlertsSeen(collectAlertCandidates());
       findOwnerChanges();
+      advanceDispatchAlertBaseline();
     }
     saveAlertSettings();
     if (typeof Notification === 'function' && Notification.permission === 'default') {

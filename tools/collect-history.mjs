@@ -1,11 +1,10 @@
 // Records the Galactic War for DropIntel's trends, one reading per run. The public repository's
 // GitHub Action (.github/workflows/collect-history.yml) runs it every 15 minutes and keeps the
-// result, history.json, on the orphan branch "war-history", with latest-raw.json beside it (see
-// RAW DETAILS). Plain Node 22, no packages:
+// result, history.json, on the orphan branch "war-history". Plain Node 22, no packages:
 //   node tools/collect-history.mjs history.json
 // A missing or broken file starts a fresh history. When both APIs fail, the file is left alone.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PRIMARY_API = 'https://api.helldivers2.dev';
@@ -355,14 +354,40 @@ function describeFaction(faction) {
   return { Terminids: 'the Terminids', Automaton: 'the Automatons', Illuminate: 'the Illuminate' }[faction] || 'the enemy';
 }
 
-// Adds one reading to the history: samples, segments, fronts, Major Orders and events.
+// How long the primary may be silent before a backup reading's planet numbers go into the
+// history. The two APIs have disagreed about planets, so a switch starts new segments; a one-off
+// backup reading in between would split every fight for nothing.
+const PRIMARY_SILENCE_BEFORE_BACKUP_SAMPLES_SECONDS = 3600;
+
+// When the primary API last gave a reading: kept in state, or (in an older file) the newest
+// sample of a segment it wrote. Null when it never did.
+function findLastPrimaryReading(history) {
+  if (Number.isFinite(history.state.lastPrimaryReadingAt)) return history.state.lastPrimaryReadingAt;
+  let newest = null;
+  for (const planet of Object.values(history.planets)) {
+    for (const segment of planet.segments) {
+      if ((segment.source ?? 'PRIMARY') !== 'PRIMARY') continue;
+      const time = segment.samples[segment.samples.length - 1]?.[0];
+      if (Number.isFinite(time) && (newest === null || time > newest)) newest = time;
+    }
+  }
+  return newest;
+}
+
+// Adds one reading to the history: samples, segments, fronts, Major Orders and events. A backup
+// reading less than an hour after a primary one adds no planet samples (the rest still counts).
 export function addSnapshot(history, snapshot) {
   const time = snapshot.takenAt;
   const season = snapshot.season ?? history.season;
   const events = findEvents(history, snapshot, season);
   history.events.push(...events);
 
-  for (const battle of snapshot.battles) {
+  const lastPrimaryReading = findLastPrimaryReading(history);
+  const briefBackupReading = snapshot.source === 'BACKUP' && lastPrimaryReading !== null
+    && time - lastPrimaryReading <= PRIMARY_SILENCE_BEFORE_BACKUP_SAMPLES_SECONDS;
+  if (snapshot.source === 'PRIMARY') history.state.lastPrimaryReadingAt = time;
+
+  for (const battle of briefBackupReading ? [] : snapshot.battles) {
     const planet = history.planets[battle.index] || (history.planets[battle.index] = { name: battle.name, segments: [] });
     planet.name = battle.name;
     const identity = segmentIdentity(battle, season, snapshot.source);
@@ -393,7 +418,33 @@ export function addSnapshot(history, snapshot) {
   // a file written by an older collector keeps its old field list otherwise
   history.fields = SAMPLE_FIELDS;
   history.season = season;
+  joinSegmentsSplitByBriefBackup(history);
   return events;
+}
+
+// Puts back together a fight the primary API read on both sides of a short backup piece (the
+// collector before 1 Oct 2026 split it on every one-off backup reading). The backup's samples
+// in between are dropped: the two APIs have disagreed about planets.
+export function joinSegmentsSplitByBriefBackup(history) {
+  const sameFight = (first, second) => ['kind', 'owner', 'campaignId', 'eventId', 'maxHealth', 'season']
+    .every((field) => first[field] === second[field]);
+  for (const planet of Object.values(history.planets)) {
+    const segments = planet.segments;
+    for (let position = 1; position < segments.length - 1;) {
+      const [before, backup, after] = segments.slice(position - 1, position + 2);
+      const backupSpan = backup.samples[backup.samples.length - 1][0] - backup.samples[0][0];
+      const joins = backup.source === 'BACKUP' && (before.source ?? 'PRIMARY') === 'PRIMARY'
+        && (after.source ?? 'PRIMARY') === 'PRIMARY' && sameFight(before, after)
+        && backupSpan <= PRIMARY_SILENCE_BEFORE_BACKUP_SAMPLES_SECONDS;
+      if (!joins) {
+        position++;
+        continue;
+      }
+      before.samples.push(...after.samples);
+      before.endsAt = after.endsAt;
+      segments.splice(position, 2);
+    }
+  }
 }
 
 // Compares a reading with the last one and says what happened in between. The first reading
@@ -518,50 +569,17 @@ export function pruneHistory(history, now, limits = HISTORY_LIMITS) {
   return history;
 }
 
-// ── RAW DETAILS ──────────────────────────────────────────────────────────────
-// A copy of what ArrowHead itself sends about the orders and the war, saved next to the history as
-// latest-raw.json (newest only). The community API's /raw endpoints pass ArrowHead's data through
-// untouched, so fields its /v1 feeds leave out show up here: the game's Galactic Campaigns (the
-// "Active Campaign" screen since patch 6.3) are not in /v1/assignments, whose title is only
-// "MAJOR ORDER". Lists longer than RAW_LIST_KEEP_LIMIT (every planet) are cut down to their length
-// and one example, so the file stays small.
-
-const RAW_LIST_KEEP_LIMIT = 40;
-const RAW_DETAILS_FILE_NAME = 'latest-raw.json';
-
-// A copy of a value with every long list replaced by { items, example }.
-export function summarizeLongLists(value) {
-  if (Array.isArray(value)) {
-    if (value.length > RAW_LIST_KEEP_LIMIT) return { items: value.length, example: summarizeLongLists(value[0]) };
-    return value.map(summarizeLongLists);
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, summarizeLongLists(entry)]));
-  }
-  return value;
-}
-
-// Downloads ArrowHead's raw orders, war status and war info for a war season. It first waits one
-// rate-limit window, so these three requests never share a window with the reading's own five.
-// A part that fails is null; it never throws.
-export async function downloadRawDetails(season, options = {}, takenAt = nowInSeconds()) {
-  await (options.wait ?? sleep)(RATE_LIMIT_WINDOW_MILLISECONDS);
-  const primaryOptions = { ...options, headers: PRIMARY_HEADERS };
-  const raw = `${PRIMARY_API}/raw/api`;
-  const assignments = await downloadOptionalJson(`${raw}/v2/Assignment/War/${season}`, primaryOptions);
-  const status = await downloadOptionalJson(`${raw}/WarSeason/${season}/Status`, primaryOptions);
-  const warInfo = await downloadOptionalJson(`${raw}/WarSeason/${season}/WarInfo`, primaryOptions);
-  return summarizeLongLists({ takenAt, season, assignments, status, warInfo });
-}
-
 // ── ONE RUN ──────────────────────────────────────────────────────────────────
 
-// Takes one reading (primary, else backup) and adds it to the history.
-// Returns the snapshot and events, or snapshot null when both APIs failed.
+// Takes one reading and adds it to the history: the primary, then the primary once more one
+// rate-limit window later (a busy moment on its side shouldn't switch the record to the other
+// API), then the backup. Returns the snapshot and events, or snapshot null when both APIs failed.
 export async function collectOnce(history, options = {}, takenAt = nowInSeconds()) {
   const problems = [];
   let snapshot = null;
-  for (const download of [downloadFromPrimaryApi, downloadFromBackupApi]) {
+  const attempts = [downloadFromPrimaryApi, downloadFromPrimaryApi, downloadFromBackupApi];
+  for (const [position, download] of attempts.entries()) {
+    if (position === 1) await (options.wait ?? sleep)(RATE_LIMIT_WINDOW_MILLISECONDS);
     try {
       snapshot = await download(options, takenAt);
       break;
@@ -588,12 +606,6 @@ async function main() {
   writeFileSync(path, JSON.stringify(history));
   console.log(`${snapshot.source}: ${snapshot.battles.length} battles, ${events.length} new events, `
     + `${Object.keys(history.planets).length} planets kept, ${Buffer.byteLength(JSON.stringify(history))} bytes.`);
-  // only the primary API has the raw feeds; a failure here never touches history.json
-  const season = snapshot.season ?? history.season;
-  if (snapshot.source === 'PRIMARY' && Number.isInteger(season)) {
-    const rawDetails = await downloadRawDetails(season).catch(() => null);
-    if (rawDetails) writeFileSync(join(dirname(path), RAW_DETAILS_FILE_NAME), JSON.stringify(rawDetails, null, 1));
-  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
