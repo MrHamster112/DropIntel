@@ -24,6 +24,23 @@
   <meta name="twitter:image:alt" content="DropIntel, a fan-made war tracker for Helldivers 2, with a yellow globe" />
   <meta name="theme-color" content="#f5c518" />
   <link rel="canonical" href="https://mrhamster112.github.io/DropIntel/" />
+  <!-- For search engines: what this page is (schema.org). Data only, the browser doesn't run it. -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "DropIntel",
+    "description": "A fan-made war tracker for Helldivers 2: the Major Order, planets that need you, and defenses at risk. Free and unofficial.",
+    "url": "https://mrhamster112.github.io/DropIntel/",
+    "image": "https://mrhamster112.github.io/DropIntel/images/link-preview.png",
+    "applicationCategory": "GameApplication",
+    "operatingSystem": "Any",
+    "browserRequirements": "Requires JavaScript",
+    "inLanguage": "en",
+    "isAccessibleForFree": true,
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
   <link rel="icon" href="images/faction-icons-drawn/Super%20Earth.svg" type="image/svg+xml" />
   <!-- installable as an app (Chrome, Edge): the manifest here, service-worker.js registered by script.js -->
   <link rel="manifest" href="manifest.webmanifest" />
@@ -89,7 +106,8 @@
       <p class="section-hint">"My front" puts that front's planets first in Where to drop. Settings stay in this browser only.</p>
       <fieldset class="alert-settings">
         <legend>Alerts</legend>
-        <label class="alert-master"><input type="checkbox" id="alerts-enabled"> Alert me while this page is open (off by default)</label>
+        <label class="alert-master"><input type="checkbox" id="alerts-enabled" aria-describedby="alerts-phone-note"> Alert me while this page is open (off by default)</label>
+        <p id="alerts-phone-note" class="section-hint">On phones, alerts only work while DropIntel is open on screen: phones pause pages in the background, and nothing sends alerts while the page is closed.</p>
         <div class="alert-types" role="group" aria-label="What to alert about">
           <label><input type="checkbox" data-alert-type="newOrder"> A new Major Order</label>
           <label><input type="checkbox" data-alert-type="newDispatch"> A new dispatch</label>
@@ -215,7 +233,6 @@
         <a href="#space-station-heading" data-section="advanced-section-space-station">DSS</a>
         <a href="#dispatches-heading" data-section="advanced-section-dispatches">Dispatches</a>
         <a href="#events-list-heading" data-section="advanced-section-events">Events</a>
-        <a href="#raw-data-heading" data-section="advanced-section-raw-data">Raw data</a>
       </nav>
       <div class="toolbar-row">
         <div class="toolbar-buttons">
@@ -389,6 +406,7 @@
             <option value="illuminate">Illuminate</option>
           </select>
         </label>
+        <label><input type="checkbox" id="guide-checked-filter"> Checked in game only</label>
         <span id="guide-match-count" class="section-hint" aria-live="polite"></span>
       </div>
       <div id="guide-tabs" class="guide-tabs" role="group" aria-label="Guide blocks"></div>

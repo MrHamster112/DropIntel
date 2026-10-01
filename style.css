@@ -795,6 +795,9 @@ input[type="search"] {
 .guide-entry h5 { font-size: 0.95rem; color: var(--text-secondary); margin: 4px 0 0; }
 .guide-entry-actions { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 .guide-confidence-tag { color: var(--status-warning); font-size: 0.8rem; font-weight: 600; }
+.guide-checked-tag { color: var(--status-good); font-size: 0.8rem; font-weight: 600; }
+/* a stratagem's input code: big enough to read at a glance mid-mission */
+.guide-stratagem-code { color: var(--accent); font-size: 1.05rem; font-weight: 700; letter-spacing: 0.08em; }
 .guide-entry-body > .guide-confidence { justify-self: start; }
 .guide-entry p { color: var(--text-secondary); max-width: 75ch; }
 .guide-list { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--text-secondary); }

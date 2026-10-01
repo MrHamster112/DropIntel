@@ -22,6 +22,9 @@
 //   the current patch, raise its confidence and update gameVersion below.
 // - pairsWith / loadout ids must point at entries that exist (a test checks).
 // - faction is 'terminids', 'automaton' or 'illuminate'.
+// - verifiedInPatch (optional, any entry): the patch you checked the entry in, as the game
+//   writes it, e.g. verifiedInPatch: '01.004.100'. The card then says "✓ Checked in game
+//   (patch …)", and the guide's "Checked in game only" filter finds it. Add 'owner' to its sources.
 //
 // confidence: high = well established and unlikely to have changed;
 //             medium = right in spirit, exact numbers may have moved;
@@ -281,9 +284,15 @@ const GUIDE_DATA = {
   ],
 
   // ── STRATAGEMS ─────────────────────────────────────────────────────────────
-  // cooldownSeconds: the last value the author knew (see gameVersion).
+  // cooldownSeconds: the last value the author knew (see gameVersion). For an Eagle it is the
+  // gap between two calls, not the rearm.
   // uses: null = limited only by cooldown; otherwise {count, per: 'call'|'rearm'|'mission'}.
   // strongAgainst / weakAgainst: faction keys. category: a key from groups.stratagemTypes.
+  // Optional, fill them in from the game:
+  //   code: the input, only 'up', 'down', 'left' and 'right', shown as arrows on the card,
+  //         e.g. code: ['down', 'down', 'up', 'right'],   (a made-up example, copy the real one)
+  //   rearmSeconds: Eagles only, how long the Eagle takes to rearm, e.g. rearmSeconds: 150,
+  //         shown as "Rearm" next to the cooldown.
   stratagems: [
     {
       id: 'machine-gun', name: 'MG-43 Machine Gun', category: 'Support weapon',

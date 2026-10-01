@@ -1035,8 +1035,8 @@ function convertSharedSegment(rawSegment) {
   };
 }
 
-// The collector's history.json → { updatedAtTimestamp, planetsByIndex, frontSamples,
-// majorOrderSamples, events }, or null when it isn't a history file this page understands.
+// The collector's history.json → { updatedAtTimestamp, startedAtTimestamp, planetsByIndex,
+// frontSamples, majorOrderSamples, events }, or null when it isn't a history file this page understands.
 function convertSharedHistory(rawHistory) {
   if (!isPlainObject(rawHistory) || rawHistory.version !== SHARED_HISTORY_VERSION) return null;
   if (!isFiniteNumber(rawHistory.updatedAt) || !isPlainObject(rawHistory.planets)) return null;
@@ -1073,8 +1073,14 @@ function convertSharedHistory(rawHistory) {
   }
   majorOrderSamples.sort((first, second) => first.timestamp - second.timestamp);
 
+  // The oldest reading kept: the record's start, or 14 days back once it has been trimmed.
+  const firstTimestamps = [frontSamples[0]?.timestamp, majorOrderSamples[0]?.timestamp,
+    ...Object.values(planetsByIndex).flatMap(planet => planet.segments.map(segment => segment.samples[0].timestamp))]
+    .filter(isFiniteNumber);
+
   return {
     updatedAtTimestamp: rawHistory.updatedAt * 1000,
+    startedAtTimestamp: firstTimestamps.length > 0 ? Math.min(...firstTimestamps) : null,
     planetsByIndex,
     frontSamples,
     majorOrderSamples,
@@ -7183,7 +7189,8 @@ function findGuideEntryPlace(guideData, entryId) {
   return listGuideEntries(guideData).find(item => item.entry.id === entryId) || null;
 }
 
-// Everything searchable about an entry, lowercased into one string.
+// Everything searchable about an entry, lowercased into one string. A stratagem's input code is
+// left out: its "up" and "down" would match ordinary words.
 function getGuideEntrySearchText(entry) {
   const parts = [];
   // Collects every string inside a value, however deeply nested.
@@ -7192,14 +7199,21 @@ function getGuideEntrySearchText(entry) {
     else if (Array.isArray(value)) value.forEach(collect);
     else if (isPlainObject(value)) Object.values(value).forEach(collect);
   };
-  collect(entry);
+  collect(Object.entries(entry).filter(([field]) => field !== 'code').map(([, value]) => value));
   return parts.join(' ').toLowerCase();
 }
 
-// Should this entry show for the current search text and front filter? The front filter keeps
-// one faction's enemies, fronts and loadouts, and the stratagems and guns said to shine against
-// it; general knowledge (armour perks, mechanics, ship modules) is never hidden by it.
-function guideEntryMatches(kind, entry, searchText = '', factionKey = 'all') {
+// Has the owner checked this entry in game? (verifiedInPatch names the patch.)
+function isGuideEntryChecked(entry) {
+  return typeof entry.verifiedInPatch === 'string' && entry.verifiedInPatch.trim() !== '';
+}
+
+// Should this entry show for the current search text and filters? The front filter keeps one
+// faction's enemies, fronts and loadouts, and the stratagems and guns said to shine against it;
+// general knowledge (armour perks, mechanics, ship modules) is never hidden by it. checkedOnly
+// keeps the entries checked in game.
+function guideEntryMatches(kind, entry, searchText = '', factionKey = 'all', { checkedOnly = false } = {}) {
+  if (checkedOnly && !isGuideEntryChecked(entry)) return false;
   if (factionKey !== 'all') {
     if (['enemy', 'front', 'loadout'].includes(kind) && entry.faction !== factionKey) return false;
     if (kind === 'stratagem' && !asArray(entry.strongAgainst).includes(factionKey)) return false;
@@ -7217,10 +7231,27 @@ function formatStratagemUses(uses) {
   return `${uses.count} per ${uses.per === 'call' ? 'call-in' : uses.per}`;
 }
 
-// Cooldown seconds → "≈ 8m" (seconds under a minute stay in seconds).
+// Cooldown or rearm seconds → "≈ 8s", "≈ 2m 30s", "≈ 8m" (an hour or more: "≈ 1h 5m").
 function formatStratagemCooldown(seconds) {
   if (!isFiniteNumber(seconds)) return '—';
-  return seconds < 60 ? `≈ ${seconds}s` : `≈ ${formatDuration(seconds)}`;
+  if (seconds < 60) return `≈ ${seconds}s`;
+  if (seconds >= 3600) return `≈ ${formatDuration(seconds)}`;
+  const leftoverSeconds = Math.round(seconds % 60);
+  return `≈ ${Math.floor(seconds / 60)}m${leftoverSeconds > 0 ? ` ${leftoverSeconds}s` : ''}`;
+}
+
+const STRATAGEM_CODE_ARROWS = { up: '↑', down: '↓', left: '←', right: '→' };
+
+// A stratagem's input code (['down', 'down', 'up', 'right']) as arrows, with the directions in
+// words for screen readers. null when there is none, or it holds a direction the page doesn't
+// know: no code is better than a wrong one.
+function buildStratagemCode(code) {
+  if (!Array.isArray(code) || code.length === 0) return null;
+  if (!code.every(direction => Object.hasOwn(STRATAGEM_CODE_ARROWS, direction))) return null;
+  return buildElement('span', { className: 'guide-stratagem-code' }, [
+    buildElement('span', { text: code.map(direction => STRATAGEM_CODE_ARROWS[direction]).join(' '), attributes: { 'aria-hidden': 'true' } }),
+    buildElement('span', { className: 'visually-hidden', text: `Input: ${code.join(', ')}` }),
+  ]);
 }
 
 // A small "check in game" badge for entries that may be out of date.
@@ -7235,6 +7266,12 @@ function buildGuideConfidenceBadge(confidence) {
 function buildGuideConfidenceTag(confidence) {
   if (confidence !== 'low') return null;
   return buildElement('span', { className: 'guide-confidence-tag', text: '⚠ Check in game' });
+}
+
+// "✓ Checked in game (patch 01.004.100)" on the closed card of an entry the owner checked.
+function buildGuideCheckedTag(entry) {
+  if (!isGuideEntryChecked(entry)) return null;
+  return buildElement('span', { className: 'guide-checked-tag', text: `✓ Checked in game (patch ${entry.verifiedInPatch.trim()})` });
 }
 
 // A link to another guide entry, by id (plain text when the id is unknown).
@@ -7341,6 +7378,7 @@ function buildGuideEntryDetails(guideData, kind, entry) {
     rows.push(
       buildGuideRow('Type', entry.category),
       buildGuideRow('Cooldown', formatStratagemCooldown(entry.cooldownSeconds)),
+      buildGuideRow('Rearm', isFiniteNumber(entry.rearmSeconds) ? formatStratagemCooldown(entry.rearmSeconds) : null),
       buildGuideRow('Uses', formatStratagemUses(entry.uses)),
       buildGuideRow('Pairs with', buildGuideLinkList(guideData, entry.pairsWith)),
       buildGuideRow('Shines against', buildGuideFactionChips(entry.strongAgainst)),
@@ -7370,9 +7408,10 @@ function buildGuideEntryDetails(guideData, kind, entry) {
   return { body, rows };
 }
 
-// The card for one guide entry: closed, its name and one line; open, everything else and a
-// "Copy link" button. An entry in several groups (armour on several weights) gets one card per
-// group; only the first carries the id links and #guide= point at.
+// The card for one guide entry: closed, its name, a stratagem's input code, one line and whether
+// it was checked in game; open, everything else and a "Copy link" button. An entry in several
+// groups (armour on several weights) gets one card per group; only the first carries the id
+// links and #guide= point at.
 function buildGuideEntryCard(guideData, kind, entry, { isCopy = false, groupKey = '' } = {}) {
   const title = entry.name || entry.title;
   const { body, rows } = buildGuideEntryDetails(guideData, kind, entry);
@@ -7390,8 +7429,10 @@ function buildGuideEntryCard(guideData, kind, entry, { isCopy = false, groupKey 
       factionIconPath ? buildImage(factionIconPath, entry.name, 'faction-icon', 28, 28) : null,
       buildElement('span', { className: 'guide-entry-heading' }, [
         buildElement('h4', { className: 'guide-entry-name', text: title }),
+        kind === 'stratagem' ? buildStratagemCode(entry.code) : null,
         line ? buildElement('span', { className: 'guide-entry-line', text: line }) : null,
-        buildGuideConfidenceTag(entry.confidence),
+        // a check in game outranks the old "check in game" warning
+        isGuideEntryChecked(entry) ? buildGuideCheckedTag(entry) : buildGuideConfidenceTag(entry.confidence),
       ]),
     ]),
     buildElement('div', { className: 'guide-entry-body' }, [
@@ -7490,14 +7531,15 @@ function selectGuideBlock(blockId) {
 }
 
 // Shows the current block, or while searching every block with a match; hides the entries that
-// don't match the search and front filter, groups left empty by them, and says how many match.
+// don't match the search and filters, groups left empty by them, and says how many match.
 function applyGuideFilters() {
   const guideData = getGuideData();
   if (!guideData) return;
   const searchText = document.getElementById('guide-search')?.value || '';
   const factionKey = document.getElementById('guide-faction-filter')?.value || 'all';
+  const checkedOnly = document.getElementById('guide-checked-filter')?.checked === true;
   const searching = searchText.trim() !== '';
-  const filtering = searching || factionKey !== 'all';
+  const filtering = searching || factionKey !== 'all' || checkedOnly;
 
   let visibleCount = 0;
   for (const block of GUIDE_BLOCKS) {
@@ -7506,7 +7548,7 @@ function applyGuideFilters() {
     const matchingIds = new Set();
     for (const list of block.lists) {
       for (const entry of asArray(guideData[list.dataKey]).filter(isPlainObject)) {
-        if (guideEntryMatches(list.kind, entry, searchText, factionKey)) matchingIds.add(entry.id);
+        if (guideEntryMatches(list.kind, entry, searchText, factionKey, { checkedOnly })) matchingIds.add(entry.id);
       }
     }
     for (const card of blockElement.querySelectorAll('.guide-entry')) card.hidden = !matchingIds.has(card.dataset.guideEntryId);
@@ -7516,7 +7558,9 @@ function applyGuideFilters() {
     }
     const blockShown = searching ? matchingIds.size > 0 : block.id === currentGuideBlockId;
     blockElement.hidden = !blockShown;
-    blockElement.querySelector('.guide-no-matches').hidden = !(filtering && matchingIds.size === 0);
+    const noMatches = blockElement.querySelector('.guide-no-matches');
+    noMatches.hidden = !(filtering && matchingIds.size === 0);
+    noMatches.textContent = searching ? 'Nothing here matches your search.' : 'Nothing here matches the filters.';
     visibleCount += matchingIds.size;
 
     const tab = document.querySelector(`.guide-tab[data-guide-block="${block.id}"]`);
@@ -7527,7 +7571,7 @@ function applyGuideFilters() {
   }
   // searching with no match anywhere: keep the chosen block on screen with its "nothing matches"
   if (searching && visibleCount === 0) document.getElementById(`guide-block-${currentGuideBlockId}`).hidden = false;
-  putTextInElement('guide-match-count', filtering ? `${visibleCount} entries match` : '');
+  putTextInElement('guide-match-count', !filtering ? '' : visibleCount === 1 ? '1 entry matches' : `${visibleCount} entries match`);
 }
 
 // Shows a guide entry in guide mode: filters cleared, its block chosen, its card open.
@@ -7536,8 +7580,10 @@ function showGuideEntry(entryId) {
   changeViewMode('guide');
   const searchBox = document.getElementById('guide-search');
   const factionFilter = document.getElementById('guide-faction-filter');
+  const checkedFilter = document.getElementById('guide-checked-filter');
   if (searchBox) searchBox.value = '';
   if (factionFilter) factionFilter.value = 'all';
+  if (checkedFilter) checkedFilter.checked = false;
   if (place) selectGuideBlock(place.block.id);
   else applyGuideFilters();
   const card = document.getElementById(`guide-entry-${entryId}`);
@@ -7680,12 +7726,16 @@ function findPlanetFromLink(value) {
     || findPlanetsMatching(text, 1)[0] || null;
 }
 
-// An advanced section from a link: "graphs", "raw-data", or a menu label such as "DSS".
+// An advanced section from a link: "graphs", "raw-data", or a menu label such as "DSS". Found
+// by its id first, so a section without a menu link (the raw data) can still be linked to.
 function findSectionFromLink(value) {
   const wanted = String(value || '').trim().toLowerCase();
   if (!wanted) return null;
-  const link = [...document.querySelectorAll('.section-nav a[data-section]')].find(candidate =>
-    candidate.dataset.section === `advanced-section-${wanted}` || candidate.textContent.trim().toLowerCase() === wanted);
+  const section = [...document.querySelectorAll('#advanced-view .collapsible-section')]
+    .find(candidate => candidate.id === `advanced-section-${wanted}`);
+  if (section) return section;
+  const link = [...document.querySelectorAll('.section-nav a[data-section]')]
+    .find(candidate => candidate.textContent.trim().toLowerCase() === wanted);
   return link ? document.getElementById(link.dataset.section) : null;
 }
 
@@ -7826,11 +7876,15 @@ function buildEventItem(event, { withDate = false } = {}) {
   ]);
 }
 
-// What an events list says when it has nothing to show.
+// What an events list says when it has nothing to show. With no events it says since when the
+// record runs (it began on 29 Sep 2026 and keeps 14 days), not a "two weeks" it may not have.
 function describeMissingEvents() {
   if (apiData.sharedHistoryStatus === 'loading') return 'Loading the war record…';
   if (apiData.sharedHistoryStatus !== 'loaded') return 'Events come from the site\'s war record, which couldn\'t be loaded (offline, or a downloaded copy without internet).';
-  return 'No events recorded in the last two weeks yet.';
+  const startedAtTimestamp = apiData.sharedHistory?.startedAtTimestamp;
+  const since = isFiniteNumber(startedAtTimestamp) ? ` since ${formatDateTime(startedAtTimestamp)}, when the war record starts` : ' yet';
+  return `No events${since}. They appear here when a planet is won or lost, a defense starts or ends, `
+    + 'a new Major Order arrives or the DSS moves.';
 }
 
 // A note for event lists when the war record is behind, or null.
@@ -8375,6 +8429,8 @@ function startApp() {
   if (guideSearch) guideSearch.addEventListener('input', () => applyGuideFilters());
   const guideFactionFilter = document.getElementById('guide-faction-filter');
   if (guideFactionFilter) guideFactionFilter.addEventListener('change', () => applyGuideFilters());
+  const guideCheckedFilter = document.getElementById('guide-checked-filter');
+  if (guideCheckedFilter) guideCheckedFilter.addEventListener('change', () => applyGuideFilters());
   const guideView = document.getElementById('guide-view');
   if (guideView) guideView.addEventListener('click', handleGuideLinkClick);
   document.addEventListener('visibilitychange', handleVisibilityChange);
