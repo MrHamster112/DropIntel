@@ -414,6 +414,8 @@ main { outline: none; }
   font-size: 0.9rem;
 }
 .section-nav a:hover { border-color: var(--accent); color: var(--text-primary); }
+/* the phone's menu in place of the links (see the max-width: 600px block) */
+.section-jump { display: none; }
 
 .section-controls { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
 .section-controls label { display: inline-flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 0.9rem; overflow-wrap: normal; max-width: 100%; }
@@ -1118,3 +1120,14 @@ input[type="search"] {
 .war-history-swatch.owner-illuminate { background: var(--faction-illuminate); }
 .war-history-swatch.owner-unrecorded { background: var(--text-muted); opacity: 0.35; }
 .war-log-more > summary, .war-history-numbers > summary { cursor: pointer; color: var(--accent); min-height: 44px; display: flex; align-items: center; }
+
+/* ── ADVANCED ON PHONES: a "Jump to a section" menu instead of the row of links ── */
+@media (max-width: 600px) {
+  .advanced-toolbar .section-nav { display: none; }
+  .section-jump { display: block; width: 100%; min-height: 44px; font: inherit; }
+}
+
+/* ── SINCE YOUR LAST VISIT ─────────────────────────────────────────────────── */
+.since-last-visit { border-left: 4px solid var(--accent); }
+.since-last-visit-orders { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+.since-last-visit-actions { margin: 8px 0 0; }

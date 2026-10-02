@@ -164,6 +164,11 @@
 <main id="main-content" tabindex="-1">
 
   <div id="simple-view" class="view simple-view" data-view="simple">
+    <section id="since-last-visit" class="panel since-last-visit" aria-labelledby="since-last-visit-heading" hidden>
+      <h2 id="since-last-visit-heading">Since your last visit</h2>
+      <div id="since-last-visit-body"></div>
+    </section>
+
     <section class="glance" aria-labelledby="glance-heading">
       <h2 id="glance-heading" class="visually-hidden">The war at a glance</h2>
       <div id="simple-glance" class="glance-grid"></div>
@@ -234,6 +239,8 @@
         <a href="#dispatches-heading" data-section="advanced-section-dispatches">Dispatches</a>
         <a href="#events-list-heading" data-section="advanced-section-events">Events</a>
       </nav>
+      <!-- on a phone the links above don't fit; this menu (filled from them) takes their place -->
+      <select id="section-jump" class="section-jump" aria-label="Jump to a section"></select>
       <div class="toolbar-row">
         <div class="toolbar-buttons">
           <button type="button" id="expand-all-sections">Expand all</button>

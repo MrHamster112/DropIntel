@@ -238,6 +238,7 @@ const apiData = {
   warLog: null,               // war-log.json, converted: every change of hands per planet (WAR HISTORY OF A PLANET)
   warLogStatus: 'idle',       // 'idle' (not asked for yet) | 'loading' | 'loaded' | 'unavailable'
   restoredSnapshotTimestamp: null, // set while the page shows the saved snapshot (LAST-KNOWN-GOOD SNAPSHOT)
+  restoredFrom: null,         // what that is: 'snapshot', or 'war-record' (THE WAR RECORD WHEN BOTH APIS ARE DOWN)
   knownBiomeNameByPlanetIndex: loadKnownBiomes(), // primary biome names, remembered for the backup API
   currentDataSource: null,    // 'PRIMARY' | 'FALLBACK' | null
   lastSuccessfulFetchTimestamp: null,
@@ -365,13 +366,19 @@ function getTaskValue(task, valueTypeId) {
 // The owner's Major Order corrections from major-order-fixes.js, checked:
 // entries of the wrong shape are left out. readable is false when the file is
 // missing or has a mistake in it; then the page words every task by itself.
+// enemyNameByUnitId: the owner's name for each enemy id the game sends (task value
+// type 4), copied from the game; the public copy may not have it yet.
 function getMajorOrderFixes() {
   const fixes = typeof MAJOR_ORDER_FIXES !== 'undefined' && isPlainObject(MAJOR_ORDER_FIXES) ? MAJOR_ORDER_FIXES : null;
+  const names = isPlainObject(fixes?.enemyNameByUnitId) ? fixes.enemyNameByUnitId : {};
   return {
     readable: fixes !== null,
     taskText: asArray(fixes?.taskText).filter(fix => isPlainObject(fix)
       && typeof fix.pageSays === 'string' && fix.pageSays.trim() !== ''
       && typeof fix.showInstead === 'string' && fix.showInstead.trim() !== ''),
+    enemyNameByUnitId: Object.fromEntries(Object.entries(names)
+      .filter(([unitId, name]) => /^\d+$/.test(unitId.trim()) && unitId.trim() !== '0' && typeof name === 'string' && name.trim() !== '')
+      .map(([unitId, name]) => [unitId.trim(), name.trim()])),
   };
 }
 
@@ -1013,7 +1020,7 @@ function convertSharedSegment(rawSegment) {
   const eventId = isDefense && rawSegment.eventId !== null && rawSegment.eventId !== undefined ? String(rawSegment.eventId) : null;
   const samples = maxHealth === null ? [] : asArray(rawSegment.samples)
     .filter(sample => Array.isArray(sample) && isFiniteNumber(sample[0]) && isFiniteNumber(sample[1]))
-    .map(([time, health, playerCount]) => {
+    .map(([time, health, playerCount, regenPerSecond]) => {
       const percent = Math.max(0, Math.min(100, (1 - health / maxHealth) * 100));
       return {
         timestamp: time * 1000,
@@ -1022,6 +1029,7 @@ function convertSharedSegment(rawSegment) {
         eventId,
         maxHealth,
         playerCount: isFiniteNumber(playerCount) ? playerCount : null,
+        regenPerSecond: isFiniteNumber(regenPerSecond) ? regenPerSecond : null,
         source: rawSegment.source === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
       };
     })
@@ -1031,6 +1039,9 @@ function convertSharedSegment(rawSegment) {
     source: rawSegment.source === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
     kind: isDefense ? 'defense' : 'liberation',
     owner: typeof rawSegment.owner === 'string' ? rawSegment.owner : null,
+    enemy: typeof rawSegment.enemy === 'string' ? rawSegment.enemy : null,
+    campaignId: isFiniteNumber(rawSegment.campaignId) ? rawSegment.campaignId : null,
+    endsAtTimestamp: isFiniteNumber(rawSegment.endsAt) ? rawSegment.endsAt * 1000 : null,
     eventId,
     maxHealth,
     samples,
@@ -1038,7 +1049,7 @@ function convertSharedSegment(rawSegment) {
 }
 
 // The collector's history.json → { updatedAtTimestamp, startedAtTimestamp, planetsByIndex,
-// frontSamples, majorOrderSamples, events }, or null when it isn't a history file this page understands.
+// frontSamples, majorOrderSamples, ordersById, events }, or null when it isn't a history file this page understands.
 function convertSharedHistory(rawHistory) {
   if (!isPlainObject(rawHistory) || rawHistory.version !== SHARED_HISTORY_VERSION) return null;
   if (!isFiniteNumber(rawHistory.updatedAt) || !isPlainObject(rawHistory.planets)) return null;
@@ -1066,7 +1077,13 @@ function convertSharedHistory(rawHistory) {
     .sort((first, second) => first.timestamp - second.timestamp);
 
   const majorOrderSamples = [];
+  const ordersById = {};
   for (const [assignmentId, rawOrder] of Object.entries(isPlainObject(rawHistory.orders) ? rawHistory.orders : {})) {
+    ordersById[assignmentId] = {
+      title: typeof rawOrder?.title === 'string' ? rawOrder.title : '',
+      expiresAtTimestamp: isFiniteNumber(rawOrder?.expiresAt) ? rawOrder.expiresAt * 1000 : null,
+      targets: asArray(rawOrder?.targets).map(target => (isFiniteNumber(target) ? target : null)),
+    };
     for (const sample of asArray(rawOrder?.samples)) {
       if (!Array.isArray(sample) || !isFiniteNumber(sample[0])) continue;
       majorOrderSamples.push({ timestamp: sample[0] * 1000, assignmentId,
@@ -1086,6 +1103,7 @@ function convertSharedHistory(rawHistory) {
     planetsByIndex,
     frontSamples,
     majorOrderSamples,
+    ordersById,
     events: asArray(rawHistory.events)
       .filter(event => isPlainObject(event) && isFiniteNumber(event.time) && typeof event.text === 'string')
       .map(event => ({ timestamp: event.time * 1000, type: String(event.type || ''),
@@ -1104,6 +1122,8 @@ function refreshSharedHistory(nowTimestamp = Date.now()) {
     .then(converted => {
       if (converted) apiData.sharedHistory = converted;
       apiData.sharedHistoryStatus = apiData.sharedHistory ? 'loaded' : 'unavailable';
+      // both war APIs down and nothing saved: the record is the next best thing
+      if (lastRefreshFailed) showWarRecordWhenNothingElse();
       renderVisibleParts();
     })
     .finally(() => { sharedHistoryDownload = null; });
@@ -3026,7 +3046,8 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
 }
 
 // Turns one assignment task into a sentence and a progress figure. The owner's
-// wording fixes (major-order-fixes.js) replace a sentence the page got wrong.
+// wording fixes (major-order-fixes.js) replace a sentence the page got wrong; failing
+// that, the owner's name for the task's enemy id names the enemy in a kill task.
 function describeAssignmentTask(task, progressValue) {
   const fixes = getMajorOrderFixes();
   const description = describeAssignmentTaskAutomatically(task, progressValue);
@@ -3037,13 +3058,18 @@ function describeAssignmentTask(task, progressValue) {
     description.automaticSentence = description.sentence;
     description.sentence = fix.showInstead.trim();
     description.enemyIsUnnamed = false; // the owner's words are the game's
+    return description;
   }
-  return description;
+  const enemyName = description.enemyIsUnnamed && task.type === TASK_TYPE.ERADICATE
+    ? fixes.enemyNameByUnitId[String(getTaskValue(task, TASK_VALUE_TYPE.UNIT_ID))] : undefined;
+  if (!enemyName) return description;
+  return { ...describeAssignmentTaskAutomatically(task, progressValue, { enemyName }), enemyNamedByOwner: true };
 }
 
 // The page's own wording of one task, from the game's numbers. It names the
-// enemy faction, not the exact enemy, so it can be less exact than the game.
-function describeAssignmentTaskAutomatically(task, progressValue) {
+// enemy faction, not the exact enemy, so it can be less exact than the game;
+// enemyName (the owner's, from the enemy id) names the enemy of a kill task.
+function describeAssignmentTaskAutomatically(task, progressValue, { enemyName = null } = {}) {
   const targetAmount = getTaskValue(task, TASK_VALUE_TYPE.TARGET_AMOUNT);
   const { planetIndex, sectorIndex } = getTaskLocation(task);
   const factionId    = getTaskValue(task, TASK_VALUE_TYPE.FACTION_ID);
@@ -3064,7 +3090,7 @@ function describeAssignmentTaskAutomatically(task, progressValue) {
     sectorIndex: isFiniteNumber(sectorIndex) ? sectorIndex : null,
     factionName,
     // the game names one kind of enemy here, and the page only says its faction
-    enemyIsUnnamed: isFiniteNumber(unitId) && unitId !== 0,
+    enemyIsUnnamed: isFiniteNumber(unitId) && unitId !== 0 && !enemyName,
   };
 
   if (task.type === TASK_TYPE.LIBERATE_PLANET || task.type === TASK_TYPE.HOLD_PLANET) {
@@ -3087,10 +3113,12 @@ function describeAssignmentTaskAutomatically(task, progressValue) {
   const factionKey = normalizeFactionName(factionName);
   const factionText = factionKey ? getFactionDisplayName(factionKey) : null;
   if (task.type === TASK_TYPE.ERADICATE) {
-    description.sentence = `Kill ${formatBigNumber(targetAmount)} ${factionText || 'enemies'}${placeText}`;
+    description.sentence = `Kill ${formatBigNumber(targetAmount)} ${enemyName || factionText || 'enemies'}${placeText}`;
   } else if (task.type === TASK_TYPE.COMPLETE_OPERATIONS) {
     description.sentence = `Complete ${formatBigNumber(targetAmount)} operations`
       + (factionText ? ` against the ${factionText}` : '') + placeText;
+  } else if (task.fromWarRecord) {
+    description.sentence = 'Task (what it asks isn\'t in the war record)';
   } else {
     // Unknown task type: say what we know without guessing what it means.
     const details = [planetName, isFiniteNumber(sectorIndex) ? `sector #${sectorIndex}` : null, factionText]
@@ -3288,6 +3316,7 @@ function describeConnectionState(nowTimestamp = Date.now()) {
     dataAgeText: formatTimeAgo(apiData.lastSuccessfulFetchTimestamp, nowTimestamp),
     errorMessage: lastErrorMessage,
     feedWarnings: [...lastFeedWarnings],
+    fromWarRecord: isShowingWarRecord(),
   };
   // During the first cycle the fast feeds render before the heavy wave has
   // finished, so a known source already counts as having data.
@@ -3642,7 +3671,7 @@ function listPageParts() {
     isShown: () => viewMode === 'advanced' && !collapsedSectionIds.has(sectionId) });
   return [
     { id: 'simple-view', isShown: () => viewMode === 'simple', renderers: [
-      renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
+      renderSinceLastVisit, renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
       renderSimpleDropTargets, renderSimpleLatestDispatch] },
     advancedSection('advanced-section-war-map', [renderWarMap]),
     advancedSection('advanced-section-gambits', [renderGambits]),
@@ -4200,7 +4229,8 @@ function renderAssignmentsInFull() {
       const rawValues = asArray(task.valueTypes)
         .map((valueType, valuePosition) => `${valueType}=${asArray(task.values)[valuePosition]}`).join(' ');
       const sentence = described.automaticSentence
-        ? `${described.sentence} (fixed by hand; the page said "${described.automaticSentence}")` : described.sentence;
+        ? `${described.sentence} (fixed by hand; the page said "${described.automaticSentence}")`
+        : described.enemyNamedByOwner ? `${described.sentence} (enemy named by hand from its id)` : described.sentence;
       return [String(taskPosition + 1), sentence, String(task.type ?? '—'), rawValues || '—',
               described.progressText, formatPercent(described.progressPercent)];
     });
@@ -4240,10 +4270,12 @@ function buildMajorOrderFixesNote() {
       text: 'major-order-fixes.js couldn\'t be read (a missing comma or quote?), so the page words every task by itself.' });
   }
   const fixCount = fixes.taskText.length;
+  const nameCount = Object.keys(fixes.enemyNameByUnitId).length;
   return buildElement('p', { className: 'section-hint',
     text: 'The page words each task by itself and names the faction, not the exact enemy, so it can be wrong. '
-      + 'Fix the wording in major-order-fixes.js in the public DropIntel repository; that file says how.'
-      + (fixCount ? ` ${fixCount} fix${fixCount === 1 ? ' is' : 'es are'} in the file.` : '') });
+      + 'Fix the wording, or name an enemy by its id, in major-order-fixes.js in the public DropIntel repository; that file says how.'
+      + (fixCount ? ` ${fixCount} fix${fixCount === 1 ? ' is' : 'es are'} in the file.` : '')
+      + (nameCount ? ` ${nameCount} enemy name${nameCount === 1 ? ' is' : 's are'} in the file.` : '') });
 }
 
 // Every campaign as a full card, filtered and sorted by the section controls → #output-campaigns
@@ -4508,12 +4540,16 @@ function describeStatusHeadline(state) {
   }
   const headlineByKind = {
     loading:  'Loading the war status…',
-    restored: `Showing saved data from ${state.dataAgeText} · updating…`,
+    restored: state.fromWarRecord
+      ? `Showing the war record from ${state.dataAgeText} · updating…`
+      : `Showing saved data from ${state.dataAgeText} · updating…`,
     live:     'Live',
     fallback: serverPreference === 'backup'
       ? 'Live (backup source, chosen in Settings)'
       : 'Live (backup source: the main source isn\'t answering)',
-    stale:    `Offline: showing data from ${state.dataAgeText}. The page keeps retrying.`,
+    stale:    state.fromWarRecord
+      ? `Offline: showing DropIntel's war record from ${state.dataAgeText} (battles and Major Order progress only). The page keeps retrying.`
+      : `Offline: showing data from ${state.dataAgeText}. The page keeps retrying.`,
     offline:  'Offline: can\'t reach the war servers yet. The page keeps retrying.',
   };
   return [headlineByKind[state.kind], ...extras].join(' ');
@@ -6667,6 +6703,146 @@ function renderMajorOrderCampaign(assignment, nowTimestamp = Date.now()) {
   ]);
 }
 
+// ── SINCE YOUR LAST VISIT ────────────────────────────────────────────────────
+// A card at the top of simple mode when someone comes back after an hour or more: planets won
+// or lost since (from the shared war record), each Major Order's progress then and now or a new
+// order, and new dispatches. Each good refresh remembers the visit (hd2_last_visit, small); the
+// first one of a page load first keeps the previous visit to compare against.
+
+const LAST_VISIT_STORAGE_KEY = 'hd2_last_visit';
+const LAST_VISIT_VERSION = 1;
+const SINCE_LAST_VISIT_MINIMUM_GAP_MILLISECONDS = 60 * 60 * 1000;
+const SINCE_LAST_VISIT_EVENT_LIMIT = 5;
+const SINCE_LAST_VISIT_EVENT_TYPES = ['liberated', 'lost', 'defenseWon', 'defenseFailed'];
+
+let previousVisit = null;            // the visit this page load compares against, or null
+let previousVisitChecked = false;    // set by the first good refresh
+let sinceLastVisitDismissed = false;
+
+// The visit stored in this browser, or null when there is none or it can't be read.
+function readLastVisit() {
+  try {
+    const stored = JSON.parse(readStoredValue(LAST_VISIT_STORAGE_KEY));
+    if (isPlainObject(stored) && stored.version === LAST_VISIT_VERSION && isFiniteNumber(stored.timestamp)) {
+      return { timestamp: stored.timestamp, orders: asArray(stored.orders).filter(isPlainObject) };
+    }
+  } catch {
+    // unreadable storage counts as no visit
+  }
+  return null;
+}
+
+// What this visit remembers for the next one: when, and each order's task progress.
+function describeVisitToRemember(nowTimestamp) {
+  return {
+    version: LAST_VISIT_VERSION,
+    timestamp: nowTimestamp,
+    orders: asArray(apiData.assignments).map(assignment => ({
+      id: assignment.id,
+      title: getOrderTitle(assignment),
+      taskPercents: asArray(assignment.tasks).map((task, position) => {
+        const percent = describeAssignmentTask(task, asArray(assignment.progress)[position]).progressPercent;
+        return isFiniteNumber(percent) ? Math.round(percent * 10) / 10 : null;
+      }),
+    })),
+  };
+}
+
+// After a good refresh: the first one of a page load keeps the previous visit when it was an
+// hour or more ago; every one then remembers this visit.
+function noteThisVisit(nowTimestamp = Date.now()) {
+  if (!previousVisitChecked) {
+    previousVisitChecked = true;
+    const lastVisit = readLastVisit();
+    if (lastVisit && nowTimestamp - lastVisit.timestamp >= SINCE_LAST_VISIT_MINIMUM_GAP_MILLISECONDS) previousVisit = lastVisit;
+  }
+  writeStoredValue(LAST_VISIT_STORAGE_KEY, JSON.stringify(describeVisitToRemember(nowTimestamp)));
+}
+
+// What changed since a visit, as plain data: { sinceTimestamp, events, moreEventCount,
+// recordNote, orderLines, newDispatchCount }. Read from apiData only.
+function describeSinceLastVisit(lastVisit) {
+  const sinceTimestamp = lastVisit.timestamp;
+  const changes = getRecentEvents().filter(event => event.timestamp > sinceTimestamp && SINCE_LAST_VISIT_EVENT_TYPES.includes(event.type));
+  const record = apiData.sharedHistory;
+  let recordNote = null;
+  if (apiData.sharedHistoryStatus === 'loading') recordNote = 'Checking the war record for planets won or lost…';
+  else if (apiData.sharedHistoryStatus !== 'loaded') recordNote = 'The war record couldn\'t be loaded, so planets won or lost aren\'t listed.';
+  else if (isFiniteNumber(record?.startedAtTimestamp) && record.startedAtTimestamp > sinceTimestamp) {
+    recordNote = `The war record only goes back to ${formatDateTime(record.startedAtTimestamp)}.`;
+  }
+
+  const orderLines = [];
+  for (const assignment of asArray(apiData.assignments)) {
+    const before = lastVisit.orders.find(order => order.id === assignment.id);
+    if (!before) {
+      orderLines.push({ status: 'warning', text: `New Major Order: ${getOrderTitle(assignment)}` });
+      continue;
+    }
+    asArray(assignment.tasks).forEach((task, position) => {
+      const described = describeAssignmentTask(task, asArray(assignment.progress)[position]);
+      const then = asArray(before.taskPercents)[position];
+      const now = described.progressPercent;
+      if (isFiniteNumber(then) && isFiniteNumber(now) && Math.abs(now - then) >= 1) {
+        orderLines.push({ status: now > then ? 'good' : 'critical',
+          text: `${described.sentence}: ${Math.round(then)}% → ${Math.round(now)}%` });
+      }
+    });
+  }
+  const currentIds = new Set(asArray(apiData.assignments).map(assignment => assignment.id));
+  for (const order of lastVisit.orders) {
+    if (!currentIds.has(order.id) && typeof order.title === 'string') orderLines.push({ status: 'neutral', text: `The Major Order ${order.title} is over.` });
+  }
+
+  const newDispatchCount = asArray(apiData.newsDispatches)
+    .filter(dispatch => Date.parse(dispatch?.published || '') > sinceTimestamp).length;
+  return {
+    sinceTimestamp,
+    events: changes.slice(0, SINCE_LAST_VISIT_EVENT_LIMIT),
+    moreEventCount: Math.max(0, changes.length - SINCE_LAST_VISIT_EVENT_LIMIT),
+    recordNote,
+    orderLines,
+    newDispatchCount,
+  };
+}
+
+// The card → #since-last-visit, hidden when there is no earlier visit, nothing changed, or it
+// was dismissed.
+function renderSinceLastVisit() {
+  const card = document.getElementById('since-last-visit');
+  if (!card) return;
+  const summary = previousVisit && !sinceLastVisitDismissed && hasAnyData() ? describeSinceLastVisit(previousVisit) : null;
+  const hasNews = summary && (summary.events.length > 0 || summary.orderLines.length > 0 || summary.newDispatchCount > 0);
+  card.hidden = !hasNews;
+  if (!hasNews) return;
+  const dismiss = buildElement('button', { className: 'link-button', text: 'Dismiss',
+    attributes: { type: 'button', id: 'since-last-visit-dismiss' } });
+  dismiss.addEventListener('click', dismissSinceLastVisit);
+  replaceContent('since-last-visit-body', [
+    buildElement('p', { className: 'section-hint', text: `Your last visit was ${formatTimeAgo(summary.sinceTimestamp)} (${formatDateTime(summary.sinceTimestamp)}).` }),
+    summary.events.length > 0 ? buildElement('ol', { className: 'event-list' }, summary.events.map(event => buildEventItem(event))) : null,
+    summary.moreEventCount > 0 ? buildElement('p', { className: 'section-hint',
+      text: `And ${summary.moreEventCount} more: see Recent events below.` }) : null,
+    summary.recordNote ? buildElement('p', { className: 'section-hint', text: summary.recordNote }) : null,
+    summary.orderLines.length > 0 ? buildElement('ul', { className: 'since-last-visit-orders' }, summary.orderLines.map(line =>
+      buildElement('li', {}, [buildStatusLine({ status: line.status, icon: { good: '▲', critical: '▼', warning: '★', neutral: '•' }[line.status], text: line.text })]))) : null,
+    summary.newDispatchCount > 0 ? buildElement('p', {
+      text: `${summary.newDispatchCount} new dispatch${summary.newDispatchCount === 1 ? '' : 'es'}; the newest is at the bottom of this page.` }) : null,
+    buildElement('p', { className: 'since-last-visit-actions' }, [dismiss]),
+  ]);
+}
+
+// Closes the card until the next visit, and puts focus on the Major Order.
+function dismissSinceLastVisit() {
+  sinceLastVisitDismissed = true;
+  renderSinceLastVisit();
+  const next = document.getElementById('mo-heading');
+  if (next) {
+    if (!next.hasAttribute('tabindex')) next.setAttribute('tabindex', '-1');
+    next.focus({ preventScroll: true });
+  }
+}
+
 // ── WAR HISTORY OF A PLANET ──────────────────────────────────────────────────
 // Who held a planet when, and what happened there, from war-log.json on the war-history branch
 // (tools/war-log.mjs): the community's War History API for 2024 to 18 Aug 2026, copied once and
@@ -7258,16 +7434,26 @@ const COLLAPSED_SECTIONS_STORAGE_KEY = 'hd2_collapsed_sections';
 // Sections that start collapsed for a first-time visitor: the raw JSON is
 // for debugging, not for reading between missions.
 const SECTIONS_COLLAPSED_BY_DEFAULT = ['advanced-section-raw-data'];
+// On a phone the long lists start collapsed too, so the page isn't a mile of scrolling.
+const SECTIONS_COLLAPSED_BY_DEFAULT_ON_PHONES = [...SECTIONS_COLLAPSED_BY_DEFAULT, 'advanced-section-planets',
+  'advanced-section-planet-effects', 'advanced-section-dispatches', 'advanced-section-events'];
+const PHONE_SCREEN_QUERY = '(max-width: 600px)';
 
-// The ids of collapsed sections, from storage or the defaults.
-function readCollapsedSectionIds() {
+// True on a phone-sized screen (the width where style.css swaps the section links for a menu).
+function isPhoneScreen() {
+  return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_SCREEN_QUERY).matches;
+}
+
+// The ids of collapsed sections, from storage (the visitor's own choice, kept once the page
+// has been opened), or the defaults for this screen.
+function readCollapsedSectionIds(onPhone = isPhoneScreen()) {
   try {
     const stored = JSON.parse(readStoredValue(COLLAPSED_SECTIONS_STORAGE_KEY));
     if (Array.isArray(stored)) return new Set(stored.filter(sectionId => typeof sectionId === 'string'));
   } catch {
     // unreadable storage falls through to the defaults
   }
-  return new Set(SECTIONS_COLLAPSED_BY_DEFAULT);
+  return new Set(onPhone ? SECTIONS_COLLAPSED_BY_DEFAULT_ON_PHONES : SECTIONS_COLLAPSED_BY_DEFAULT);
 }
 
 let collapsedSectionIds = readCollapsedSectionIds();
@@ -7309,6 +7495,27 @@ function focusAndReveal(element) {
   if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1');
   element.focus({ preventScroll: true });
   if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+// Fills the phone's "Jump to a section" menu from the section links, so the two always list
+// the same sections in the same order.
+function buildSectionJumpMenu() {
+  const menu = document.getElementById('section-jump');
+  if (!menu) return;
+  const links = [...document.querySelectorAll('.advanced-toolbar .section-nav a[data-section]')];
+  menu.replaceChildren(
+    buildElement('option', { text: 'Jump to a section…', attributes: { value: '' } }),
+    ...links.map(link => buildElement('option', { text: link.textContent.trim(), attributes: { value: link.dataset.section } })),
+  );
+}
+
+// The phone menu: opens the chosen section, shows it, and goes back to "Jump to a section…".
+function handleSectionJumpChange(event) {
+  const sectionId = event.target.value;
+  if (!sectionId) return;
+  setSectionCollapsed(sectionId, false);
+  focusAndReveal(document.getElementById(sectionId));
+  event.target.value = '';
 }
 
 // Section-menu links open their section before the browser jumps to it.
@@ -7415,6 +7622,9 @@ function wireAdvancedNavigation() {
   }
   const sectionNav = document.querySelector('.advanced-toolbar .section-nav');
   if (sectionNav) sectionNav.addEventListener('click', handleSectionNavClick);
+  buildSectionJumpMenu();
+  const sectionJump = document.getElementById('section-jump');
+  if (sectionJump) sectionJump.addEventListener('change', handleSectionJumpChange);
   const jumpForm = document.getElementById('planet-jump-form');
   if (jumpForm) jumpForm.addEventListener('submit', handlePlanetJumpSubmit);
   const jumpToggle = document.getElementById('planet-jump-toggle');
@@ -8653,6 +8863,104 @@ function restoreLastKnownGoodSnapshot(nowTimestamp = Date.now()) {
   apiData.currentDataSource = snapshot.currentDataSource === 'FALLBACK' ? 'FALLBACK' : 'PRIMARY';
   apiData.lastSuccessfulFetchTimestamp = snapshot.savedAt;
   apiData.restoredSnapshotTimestamp = snapshot.savedAt;
+  apiData.restoredFrom = 'snapshot';
+  overlayFreshBattleDataOntoPlanetList();
+  return true;
+}
+
+// ── THE WAR RECORD WHEN BOTH APIS ARE DOWN ───────────────────────────────────
+// With no fresh data and no saved snapshot, the page builds what it can from the shared war
+// record (history.json, another host): the battles of its newest reading with their progress
+// and players, and each Major Order's progress. Not in it: planet positions, biomes, hazards,
+// order tasks, war statistics, dispatches; those parts stay empty rather than guessed. Shown like
+// a restored snapshot (restoredFrom 'war-record': never saved, no alerts) until fresh data
+// replaces it.
+
+const WAR_RECORD_VIEW_MAX_AGE_MILLISECONDS = 24 * 3600 * 1000;
+// a fight or order is current when the newest reading that recorded any has it (a brief backup
+// reading records no planets, so "newest" is per kind, not the file's updatedAt)
+const WAR_RECORD_SAME_READING_MILLISECONDS = 60 * 1000;
+
+// The time of the newest sample in a list of sample lists, or null.
+function findNewestSampleTimestamp(sampleLists) {
+  const times = sampleLists.map(samples => samples[samples.length - 1]?.timestamp).filter(isFiniteNumber);
+  return times.length > 0 ? Math.max(...times) : null;
+}
+
+// One current fight of the record as a campaign in the primary API's shape, or null.
+function buildCampaignFromWarRecord(planetIndex, planetRecord, newestReadingTimestamp) {
+  const segment = planetRecord.segments[planetRecord.segments.length - 1];
+  const sample = segment?.samples[segment.samples.length - 1];
+  if (!sample || newestReadingTimestamp - sample.timestamp > WAR_RECORD_SAME_READING_MILLISECONDS) return null;
+  const isDefense = segment.kind === 'defense';
+  const percent = isDefense ? sample.defensePercent : sample.liberationPercent;
+  const health = segment.maxHealth * (1 - percent / 100);
+  const planet = {
+    index: planetIndex,
+    name: planetRecord.name,
+    currentOwner: isDefense ? 'Humans' : segment.owner,
+    health: isDefense ? null : health,
+    maxHealth: isDefense ? null : segment.maxHealth,
+    regenPerSecond: sample.regenPerSecond ?? 0,
+    statistics: { playerCount: sample.playerCount ?? 0 },
+    event: isDefense ? {
+      // the record keeps ids as text (the backup API's are made up, "backup-N"); the API sends numbers
+      id: /^\d+$/.test(String(segment.eventId)) ? Number(segment.eventId) : segment.eventId,
+      eventType: 1, faction: segment.enemy, health, maxHealth: segment.maxHealth,
+      endTime: segment.endsAtTimestamp !== null ? new Date(segment.endsAtTimestamp).toISOString() : null,
+    } : null,
+  };
+  return normalizeCampaign({ id: segment.campaignId ?? planetIndex, planet, type: isDefense ? 4 : 0,
+    faction: isDefense ? segment.enemy : segment.owner });
+}
+
+// The record's current Major Orders: name, deadline, and each task's progress against its
+// target. What a task asks isn't recorded, so its tasks say so (fromWarRecord).
+function buildAssignmentsFromWarRecord(record) {
+  const latestByOrder = new Map();
+  for (const sample of record.majorOrderSamples) latestByOrder.set(sample.assignmentId, sample);
+  const newestReading = findNewestSampleTimestamp([record.majorOrderSamples]);
+  return [...latestByOrder.values()]
+    .filter(sample => newestReading - sample.timestamp <= WAR_RECORD_SAME_READING_MILLISECONDS)
+    .map(sample => {
+      const order = record.ordersById[sample.assignmentId] || { title: '', expiresAtTimestamp: null, targets: [] };
+      return normalizeAssignment({
+        id: Number(sample.assignmentId),
+        title: order.title,
+        expiration: order.expiresAtTimestamp !== null ? new Date(order.expiresAtTimestamp).toISOString() : null,
+        progress: sample.progress,
+        tasks: order.targets.map(target => ({ fromWarRecord: true, type: null,
+          valueTypes: isFiniteNumber(target) ? [TASK_VALUE_TYPE.TARGET_AMOUNT] : [], values: isFiniteNumber(target) ? [target] : [] })),
+      });
+    })
+    .filter(Boolean);
+}
+
+// True while the page shows the war record instead of the war feeds.
+function isShowingWarRecord() {
+  return apiData.restoredSnapshotTimestamp !== null && apiData.restoredFrom === 'war-record';
+}
+
+// Builds apiData from the war record when there is nothing else (no fresh data, no saved
+// snapshot), or again from a newer record while it is showing. Returns true when it did.
+function showWarRecordWhenNothingElse(nowTimestamp = Date.now()) {
+  const record = apiData.sharedHistory;
+  if (!record || (hasAnyData() && !isShowingWarRecord())) return false;
+  if (nowTimestamp - record.updatedAtTimestamp > WAR_RECORD_VIEW_MAX_AGE_MILLISECONDS) return false;
+  const newestPlanetReading = findNewestSampleTimestamp(Object.values(record.planetsByIndex)
+    .map(planetRecord => planetRecord.segments[planetRecord.segments.length - 1]?.samples || []));
+  apiData.activeCampaigns = Object.entries(record.planetsByIndex)
+    .map(([planetIndex, planetRecord]) => buildCampaignFromWarRecord(Number(planetIndex), planetRecord, newestPlanetReading))
+    .filter(Boolean);
+  apiData.defenseEvents = apiData.activeCampaigns.map(campaign => campaign.planet).filter(planet => planet.event);
+  apiData.assignments = buildAssignmentsFromWarRecord(record);
+  apiData.newsDispatches = [];
+  apiData.warStatistics = null;
+  apiData.planets = [];
+  apiData.currentDataSource = null;
+  apiData.lastSuccessfulFetchTimestamp = record.updatedAtTimestamp;
+  apiData.restoredSnapshotTimestamp = record.updatedAtTimestamp;
+  apiData.restoredFrom = 'war-record';
   overlayFreshBattleDataOntoPlanetList();
   return true;
 }
@@ -8686,7 +8994,12 @@ async function runRefreshCycle() {
 
   const downloadSucceeded = await downloadAllData(renderVisibleParts);
   lastRefreshFailed = !downloadSucceeded;
-  if (downloadSucceeded) saveLastKnownGoodSnapshot();
+  if (downloadSucceeded) {
+    saveLastKnownGoodSnapshot();
+    noteThisVisit();
+  } else {
+    showWarRecordWhenNothingElse();
+  }
   renderVisibleParts();
 
   scheduleNextRefresh();
