@@ -1,11 +1,13 @@
 // Records the Galactic War for DropIntel's trends, one reading per run. The public repository's
 // GitHub Action (.github/workflows/collect-history.yml) runs it every 15 minutes and keeps the
-// result, history.json, on the orphan branch "war-history". Plain Node 22, no packages:
-//   node tools/collect-history.mjs history.json
-// A missing or broken file starts a fresh history. When both APIs fail, the file is left alone.
+// result, history.json, and the war log of every change of hands, war-log.json (tools/war-log.mjs),
+// on the orphan branch "war-history". Plain Node 22, no packages:
+//   node tools/collect-history.mjs history.json [war-log.json]
+// A missing or broken file starts a fresh one. When both APIs fail, the files are left alone.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readWarLogFile, recordReadingInWarLog, seedWarLogFromHistory } from './war-log.mjs';
 
 export const PRIMARY_API = 'https://api.helldivers2.dev';
 export const BACKUP_API = 'https://helldiverstrainingmanual.com/api/v1';
@@ -453,8 +455,9 @@ export function findEvents(history, snapshot, season) {
   const state = history.state;
   const time = snapshot.takenAt;
   const events = [];
-  const addEvent = (type, text, planetIndex) =>
-    events.push(planetIndex === undefined ? { time, type, text } : { time, type, planet: planetIndex, text });
+  // faction: the enemy the event is about (the attacker, the one driven out or the one that won)
+  const addEvent = (type, text, planetIndex, faction) =>
+    events.push(planetIndex === undefined ? { time, type, text } : { time, type, planet: planetIndex, text, faction });
 
   if (history.season !== null && snapshot.season !== null && snapshot.season !== history.season) {
     addEvent('newWar', `A new Galactic War began (war ${snapshot.season}).`);
@@ -474,16 +477,16 @@ export function findEvents(history, snapshot, season) {
     const ranOut = defense.endsAt !== null && time >= defense.endsAt - 60;
     const name = planetName(history, snapshot, index);
     if ((owner && owner !== 'Humans') || (!owner && ranOut)) {
-      addEvent('defenseFailed', `${name} fell to ${describeFaction(defense.enemy)}: the defense failed.`, index);
+      addEvent('defenseFailed', `${name} fell to ${describeFaction(defense.enemy)}: the defense failed.`, index, defense.enemy);
     } else {
-      addEvent('defenseWon', `${name} held: the defense against ${describeFaction(defense.enemy)} was won.`, index);
+      addEvent('defenseWon', `${name} held: the defense against ${describeFaction(defense.enemy)} was won.`, index, defense.enemy);
     }
     settledPlanets.add(index);
   }
   if (!isBaseline) {
     for (const defense of currentDefenses.values()) {
       if (state.defenses[defense.index]?.eventId !== defense.eventId) {
-        addEvent('attack', `${describeFaction(defense.enemy).replace(/^t/, 'T')} attack ${defense.name}.`, defense.index);
+        addEvent('attack', `${describeFaction(defense.enemy).replace(/^t/, 'T')} attack ${defense.name}.`, defense.index, defense.enemy);
       }
     }
   }
@@ -493,8 +496,8 @@ export function findEvents(history, snapshot, season) {
     const previousOwner = state.owners[index];
     if (!previousOwner || previousOwner === owner || settledPlanets.has(index)) continue;
     const name = planetName(history, snapshot, index);
-    if (owner === 'Humans') addEvent('liberated', `${name} was liberated from ${describeFaction(previousOwner)}.`, index);
-    else if (previousOwner === 'Humans') addEvent('lost', `${name} was lost to ${describeFaction(owner)}.`, index);
+    if (owner === 'Humans') addEvent('liberated', `${name} was liberated from ${describeFaction(previousOwner)}.`, index, previousOwner);
+    else if (previousOwner === 'Humans') addEvent('lost', `${name} was lost to ${describeFaction(owner)}.`, index, owner);
   }
 
   if (snapshot.orders && state.orderIds && !isBaseline) {
@@ -506,7 +509,7 @@ export function findEvents(history, snapshot, season) {
   const dssIndex = snapshot.dssPlanetIndex;
   if (dssIndex !== undefined && dssIndex !== null && state.dssPlanetIndex !== undefined && state.dssPlanetIndex !== null
       && dssIndex !== state.dssPlanetIndex) {
-    addEvent('dssMoved', `The Democracy Space Station moved to ${planetName(history, snapshot, dssIndex)}.`, dssIndex);
+    addEvent('dssMoved', `The Democracy Space Station moved to ${planetName(history, snapshot, dssIndex)}.`, dssIndex, null);
   }
 
   rememberState(state, snapshot);
@@ -593,19 +596,39 @@ export async function collectOnce(history, options = {}, takenAt = nowInSeconds(
   return { snapshot, events, problems };
 }
 
-// The command line: reads the file, adds a reading, writes it back compactly.
+// Adds a reading to the war log. historyBefore is history.json as it was before the reading: a
+// new war log starts where it starts, when that is certain (seedWarLogFromHistory).
+export function updateWarLog(warLog, historyBefore, snapshot, events, limits = HISTORY_LIMITS) {
+  seedWarLogFromHistory(warLog, historyBefore, historyBefore.state.owners, limits.maxEvents);
+  recordReadingInWarLog(warLog, snapshot, events);
+  return warLog;
+}
+
+// The command line: reads the files, adds a reading, writes them back compactly.
 async function main() {
   const path = process.argv[2] || 'history.json';
+  const warLogPath = process.argv[3] || null;
   const history = readHistoryFile(path);
+  const historyBefore = structuredClone(history);
   const { snapshot, events, problems } = await collectOnce(history);
   for (const problem of problems) console.warn(`Warning: ${problem}`);
   if (!snapshot) {
-    console.log('::warning::Both APIs failed; history.json was left as it was.');
+    console.log('::warning::Both APIs failed; the files were left as they were.');
     return;
   }
   writeFileSync(path, JSON.stringify(history));
   console.log(`${snapshot.source}: ${snapshot.battles.length} battles, ${events.length} new events, `
     + `${Object.keys(history.planets).length} planets kept, ${Buffer.byteLength(JSON.stringify(history))} bytes.`);
+  if (warLogPath) {
+    const warLog = readWarLogFile(warLogPath);
+    if (!warLog) {
+      console.log('::warning::war-log.json could not be read, so it was left as it was.');
+      return;
+    }
+    updateWarLog(warLog, historyBefore, snapshot, events);
+    writeFileSync(warLogPath, JSON.stringify(warLog));
+    console.log(`War log: ${Object.keys(warLog.planets).length} planets, ${Buffer.byteLength(JSON.stringify(warLog))} bytes.`);
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

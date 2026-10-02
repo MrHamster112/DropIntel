@@ -1,0 +1,84 @@
+# Copies the war's past into war-log.json on the "war-history" branch, once: who held each planet
+# from 2024 until the community's War History API stopped recording (18 Aug 2026).
+# Started by hand only: Actions tab → "Copy the war's past" → Run workflow. It takes a few hours
+# and asks the archive one question at a time. If it runs out of time, it saves what it has; run
+# it again and it carries on. Running it again after it finished reads everything once more.
+# Published from DropIntel-dev: edit it there, not here.
+name: Copy the war's past
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  read:
+    if: github.repository == 'MrHamster112/DropIntel'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Get the saved war log (to carry on where an earlier run stopped)
+        run: |
+          mkdir -p war-history
+          if git fetch --quiet --depth 1 origin war-history; then
+            git show FETCH_HEAD:war-log.json > war-history/war-log.json || rm -f war-history/war-log.json
+          fi
+
+      - name: Read the archive (a few hours)
+        run: node tools/backfill-war-log.mjs read archive-part.json war-history/war-log.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-part
+          path: archive-part.json
+          retention-days: 7
+
+  save:
+    needs: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # the collector's group: never at the same time as a reading, so neither overwrites the
+    # other's war log (if GitHub cancels this while it waits, re-run this job on its own)
+    concurrency:
+      group: collect-history
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: archive-part
+
+      - name: Get the saved history and war log
+        run: |
+          mkdir -p war-history
+          git fetch --quiet --depth 1 origin war-history
+          git show FETCH_HEAD:history.json > war-history/history.json
+          git show FETCH_HEAD:war-log.json > war-history/war-log.json || rm -f war-history/war-log.json
+
+      - name: Put the archive's part in front of our own record
+        run: node tools/backfill-war-log.mjs merge archive-part.json war-history/war-log.json
+
+      - name: Save it to the war-history branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd war-history
+          git init --quiet
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --quiet --orphan war-history
+          git add history.json war-log.json
+          git commit --quiet -m "War log: the archive's part $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push --quiet --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" war-history

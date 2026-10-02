@@ -235,6 +235,8 @@ const apiData = {
   majorOrderHistory: loadMajorOrderHistory(Date.now()), // [{timestamp, assignmentId, progress[]}]
   sharedHistory: null,        // the collector's history.json, converted; in memory only (SHARED WAR HISTORY)
   sharedHistoryStatus: 'loading', // 'loading' | 'loaded' | 'unavailable'
+  warLog: null,               // war-log.json, converted: every change of hands per planet (WAR HISTORY OF A PLANET)
+  warLogStatus: 'idle',       // 'idle' (not asked for yet) | 'loading' | 'loaded' | 'unavailable'
   restoredSnapshotTimestamp: null, // set while the page shows the saved snapshot (LAST-KNOWN-GOOD SNAPSHOT)
   knownBiomeNameByPlanetIndex: loadKnownBiomes(), // primary biome names, remembered for the backup API
   currentDataSource: null,    // 'PRIMARY' | 'FALLBACK' | null
@@ -6665,13 +6667,322 @@ function renderMajorOrderCampaign(assignment, nowTimestamp = Date.now()) {
   ]);
 }
 
+// ── WAR HISTORY OF A PLANET ──────────────────────────────────────────────────
+// Who held a planet when, and what happened there, from war-log.json on the war-history branch
+// (tools/war-log.mjs): the community's War History API for 2024 to 18 Aug 2026, copied once and
+// read every 6 hours (so its dates are approximate and very short changes may be missing), then
+// DropIntel's own record since 29 Sep 2026. Downloaded when a planet's details first open, not
+// at start-up, and kept in memory only. Shown in the planet drawer.
+
+const WAR_LOG_URL = 'https://raw.githubusercontent.com/MrHamster112/DropIntel/war-history/war-log.json';
+const WAR_LOG_VERSION = 1;
+const WAR_LOG_REFRESH_MILLISECONDS = 30 * 60 * 1000;
+const WAR_LOG_ENTRIES_SHOWN = 5;
+const WAR_HISTORY_ARCHIVE_URL = 'https://github.com/helldivers-2/War-History-API';
+// a stretch shorter than this between the archive and our record isn't worth calling a gap
+const WAR_LOG_GAP_WORTH_SAYING_MILLISECONDS = 24 * 3600 * 1000;
+// while our record's newest reading is this recent, the current owner's stretch runs to now
+const WAR_LOG_FRESH_MILLISECONDS = 3600 * 1000;
+
+let warLogDownload = null;
+let warLogAskedAtTimestamp = 0;
+
+// An owner as the war log writes it ('Humans', 'Terminids'…) → a faction key; null stays null
+// (not recorded).
+function getWarLogOwnerKey(owner) {
+  if (owner === null) return null;
+  return getFactionKey(owner) || 'unknown';
+}
+
+// war-log.json → { updatedAtTimestamp, coverage, seasons, planetsByIndex }, or null when it isn't
+// a war log this page understands. Anything unreadable inside is dropped.
+function convertWarLog(rawWarLog) {
+  if (!isPlainObject(rawWarLog) || rawWarLog.version !== WAR_LOG_VERSION || !isPlainObject(rawWarLog.planets)) return null;
+  const coverage = asArray(rawWarLog.coverage)
+    .filter(part => isPlainObject(part) && ['archive', 'dropintel'].includes(part.source) && isFiniteNumber(part.from) && isFiniteNumber(part.to))
+    .map(part => ({ source: part.source, fromTimestamp: part.from * 1000, toTimestamp: part.to * 1000, complete: part.complete !== false }))
+    .sort((first, second) => first.fromTimestamp - second.fromTimestamp);
+  const planetsByIndex = {};
+  for (const [planetIndex, rawPlanet] of Object.entries(rawWarLog.planets)) {
+    const owners = asArray(rawPlanet?.owners)
+      .filter(entry => Array.isArray(entry) && isFiniteNumber(entry[0]) && (entry[1] === null || typeof entry[1] === 'string'))
+      .map(([time, owner]) => ({ timestamp: time * 1000, ownerKey: getWarLogOwnerKey(owner) }))
+      .sort((first, second) => first.timestamp - second.timestamp);
+    const events = asArray(rawPlanet?.events)
+      .filter(entry => Array.isArray(entry) && isFiniteNumber(entry[0]) && typeof entry[1] === 'string')
+      .map(([time, type, faction]) => ({ timestamp: time * 1000, type, factionKey: typeof faction === 'string' ? getFactionKey(faction) : null }));
+    if (owners.length > 0 || events.length > 0) planetsByIndex[planetIndex] = { owners, events };
+  }
+  return {
+    updatedAtTimestamp: isFiniteNumber(rawWarLog.updatedAt) ? rawWarLog.updatedAt * 1000 : null,
+    coverage,
+    seasons: asArray(rawWarLog.seasons).filter(entry => Array.isArray(entry) && isFiniteNumber(entry[0]))
+      .map(([time, season]) => ({ timestamp: time * 1000, season })),
+    planetsByIndex,
+  };
+}
+
+// Downloads the war log (single-flight) when a planet's details are open: the first time, then
+// when the copy is over 30 minutes old (a failure waits as long before asking again). Never
+// throws; a failure keeps the last good copy, or none. Redraws the drawer when done.
+function refreshWarLogWhenNeeded(nowTimestamp = Date.now()) {
+  if (warLogDownload) return warLogDownload;
+  if (apiData.warLogStatus !== 'idle' && nowTimestamp - warLogAskedAtTimestamp < WAR_LOG_REFRESH_MILLISECONDS) return Promise.resolve();
+  warLogAskedAtTimestamp = nowTimestamp;
+  if (!apiData.warLog) apiData.warLogStatus = 'loading';
+  warLogDownload = downloadJson(WAR_LOG_URL, { cache: 'no-cache' }, 0)
+    .then(rawWarLog => convertWarLog(rawWarLog))
+    .catch(() => null)
+    .then(converted => {
+      if (converted) apiData.warLog = converted;
+      apiData.warLogStatus = apiData.warLog ? 'loaded' : 'unavailable';
+      renderPlanetDrawer();
+    })
+    .finally(() => { warLogDownload = null; });
+  return warLogDownload;
+}
+
+// "the Terminids", "Super Earth", "an unknown faction": a faction key in a sentence.
+function describeWarLogFaction(factionKey) {
+  if (factionKey === 'humans') return 'Super Earth';
+  if (!factionKey || factionKey === 'unknown') return 'an unknown faction';
+  return `the ${getFactionDisplayName(factionKey)}`;
+}
+
+// The same, starting a sentence.
+function describeWarLogFactionAtStart(factionKey) {
+  const text = factionKey ? describeWarLogFaction(factionKey) : 'the enemy';
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// A timestamp → "2 Mar 2024", always in English.
+function formatDate(timestamp) {
+  return new Date(timestamp).toLocaleDateString(DISPLAY_LOCALE, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// One change of hands in words: "Liberated from the Terminids".
+function describeOwnerChange(change) {
+  if (change.kind === 'liberated') return `Liberated from ${describeWarLogFaction(change.fromKey)}`;
+  if (change.kind === 'lost') return `Lost to ${describeWarLogFaction(change.toKey)}`;
+  if (change.kind === 'newWar') return `A new war began, with ${describeWarLogFaction(change.toKey)} holding it`;
+  return `Taken by ${describeWarLogFaction(change.toKey)} from ${describeWarLogFaction(change.fromKey)}`;
+}
+
+// One event of our own record in words.
+function describeWarLogEvent(event) {
+  if (event.type === 'attack') return `${describeWarLogFactionAtStart(event.factionKey)} attacked`;
+  if (event.type === 'defenseWon') return `Held: the defense against ${event.factionKey ? describeWarLogFaction(event.factionKey) : 'the enemy'} was won`;
+  if (event.type === 'defenseFailed') return `Fell to ${event.factionKey ? describeWarLogFaction(event.factionKey) : 'the enemy'}: the defense failed`;
+  if (event.type === 'liberated') return `Liberated from ${event.factionKey ? describeWarLogFaction(event.factionKey) : 'the enemy'}`;
+  if (event.type === 'lost') return `Lost to ${event.factionKey ? describeWarLogFaction(event.factionKey) : 'the enemy'}`;
+  return null;
+}
+
+// Everything the drawer says about a planet's past, as plain data. status: 'loading' |
+// 'unavailable' | 'none' (nothing recorded for it) | 'ready'. Periods are who held it from when
+// to when (ownerKey null: not recorded); changes are every change of hands, with liberated and
+// lost counted; the log is newest first, each entry with its text and whether its date is
+// approximate (the archive's).
+function describePlanetWarHistory(planetIndex, nowTimestamp = Date.now()) {
+  const warLog = apiData.warLog;
+  if (!warLog) return { status: apiData.warLogStatus === 'unavailable' ? 'unavailable' : 'loading' };
+  const archive = warLog.coverage.find(part => part.source === 'archive') || null;
+  const ours = warLog.coverage.find(part => part.source === 'dropintel') || null;
+  const entry = warLog.planetsByIndex[planetIndex];
+  if (!entry || !entry.owners.some(owner => owner.ownerKey !== null)) return { status: 'none', archive, ours };
+
+  const newestReading = Math.max(...warLog.coverage.map(part => part.toTimestamp), ...entry.owners.map(owner => owner.timestamp));
+  const recordEnd = ours && nowTimestamp - ours.toTimestamp < WAR_LOG_FRESH_MILLISECONDS ? Math.max(nowTimestamp, newestReading) : newestReading;
+  // the last stretch always stays, even when the newest reading is the change itself
+  const periods = entry.owners.map((owner, position) => ({
+    fromTimestamp: owner.timestamp,
+    toTimestamp: position + 1 < entry.owners.length ? entry.owners[position + 1].timestamp : recordEnd,
+    ownerKey: owner.ownerKey,
+  })).filter((period, position, all) => period.toTimestamp > period.fromTimestamp || position === all.length - 1);
+
+  const newWarTimestamps = new Set(warLog.seasons.filter((season, position) =>
+    position > 0 && season.season !== warLog.seasons[position - 1].season).map(season => season.timestamp));
+  const isOurs = timestamp => ours !== null && timestamp >= ours.fromTimestamp;
+  const changes = [];
+  let previous = null;
+  let unrecordedFrom = null;
+  for (const owner of entry.owners) {
+    if (owner.ownerKey === null) {
+      if (previous && unrecordedFrom === null) unrecordedFrom = owner.timestamp;
+      continue;
+    }
+    if (previous && previous.ownerKey !== owner.ownerKey) {
+      changes.push({
+        timestamp: owner.timestamp, fromKey: previous.ownerKey, toKey: owner.ownerKey, unrecordedFromTimestamp: unrecordedFrom,
+        kind: newWarTimestamps.has(owner.timestamp) ? 'newWar'
+          : owner.ownerKey === 'humans' ? 'liberated' : previous.ownerKey === 'humans' ? 'lost' : 'changed',
+      });
+    }
+    previous = owner;
+    unrecordedFrom = null;
+  }
+
+  // the log: the archive's changes and those in a stretch nobody recorded, then our own
+  // events, plus any change of ours no event describes (e.g. one enemy taking it from another)
+  const ownerEventTimestamps = new Set(entry.events.filter(event => ['liberated', 'lost', 'defenseFailed'].includes(event.type))
+    .map(event => event.timestamp));
+  const log = [];
+  for (const change of changes) {
+    if (isOurs(change.timestamp) && change.unrecordedFromTimestamp === null && ownerEventTimestamps.has(change.timestamp)) continue;
+    log.push({ timestamp: change.timestamp, text: describeOwnerChange(change), approximate: !isOurs(change.timestamp),
+      unrecordedFromTimestamp: change.unrecordedFromTimestamp, status: change.kind === 'lost' ? 'critical' : change.kind === 'liberated' ? 'good' : 'neutral' });
+  }
+  for (const event of entry.events) {
+    const text = describeWarLogEvent(event);
+    if (text) log.push({ timestamp: event.timestamp, text, approximate: false, unrecordedFromTimestamp: null,
+      status: ['defenseFailed', 'lost'].includes(event.type) ? 'critical' : ['defenseWon', 'liberated'].includes(event.type) ? 'good' : 'warning' });
+  }
+  log.sort((first, second) => second.timestamp - first.timestamp);
+
+  const recorded = periods.filter(period => period.ownerKey !== null);
+  const recordedMilliseconds = recorded.reduce((sum, period) => sum + period.toTimestamp - period.fromTimestamp, 0);
+  const heldMilliseconds = recorded.filter(period => period.ownerKey === 'humans')
+    .reduce((sum, period) => sum + period.toTimestamp - period.fromTimestamp, 0);
+  const defenseEvents = ours ? entry.events.filter(event => event.timestamp >= ours.fromTimestamp) : [];
+  return {
+    status: 'ready',
+    archive,
+    ours,
+    periods,
+    changes,
+    log,
+    recordedSinceTimestamp: periods.length > 0 ? periods[0].fromTimestamp : entry.owners[0].timestamp,
+    recordEndTimestamp: recordEnd,
+    liberatedCount: changes.filter(change => change.kind === 'liberated').length,
+    lostCount: changes.filter(change => change.kind === 'lost').length,
+    changeCount: changes.filter(change => change.kind !== 'newWar').length,
+    heldShare: recordedMilliseconds > 0 ? heldMilliseconds / recordedMilliseconds : null,
+    defenses: ours ? {
+      sinceTimestamp: ours.fromTimestamp,
+      held: defenseEvents.filter(event => event.type === 'defenseWon').length,
+      failed: defenseEvents.filter(event => event.type === 'defenseFailed').length,
+    } : null,
+  };
+}
+
+// Where the war history comes from, in one sentence or two.
+function describeWarLogSources(archive, ours) {
+  const parts = [];
+  if (archive) {
+    parts.push(`the community's War History archive from ${formatDate(archive.fromTimestamp)} to ${formatDate(archive.toTimestamp)}`
+      + `${archive.complete ? '' : ' (still being copied)'}, read every 6 hours, so its dates are approximate and a planet that `
+      + 'changed hands and back within hours may be missing');
+  }
+  if (ours) parts.push(`DropIntel's own record since ${formatDate(ours.fromTimestamp)}`);
+  const sentences = [`From ${parts.join(', and ')}.`];
+  if (archive && ours && ours.fromTimestamp - archive.toTimestamp > WAR_LOG_GAP_WORTH_SAYING_MILLISECONDS) {
+    sentences.push(`Nothing was recorded between ${formatDate(archive.toTimestamp)} and ${formatDate(ours.fromTimestamp)}.`);
+  }
+  return sentences.join(' ');
+}
+
+// The control-over-time strip: one bar per period, coloured by who held it (grey: not
+// recorded), with the shares in words for screen readers.
+function buildWarHistoryStrip(history) {
+  const start = history.periods[0].fromTimestamp;
+  const span = Math.max(1, history.recordEndTimestamp - start);
+  const shareByOwner = new Map();
+  for (const period of history.periods) {
+    const key = period.ownerKey || 'unrecorded';
+    shareByOwner.set(key, (shareByOwner.get(key) || 0) + (period.toTimestamp - period.fromTimestamp) / span);
+  }
+  const label = `Who held it from ${formatDate(start)} to ${formatDate(history.recordEndTimestamp)}: `
+    + [...shareByOwner].map(([key, share]) => `${key === 'unrecorded' ? 'not recorded' : describeWarLogFaction(key)} ${Math.round(share * 100)}%`).join(', ');
+  const svg = createSvgElement('svg', { class: 'war-history-strip', viewBox: '0 0 1000 20', preserveAspectRatio: 'none',
+    role: 'img', 'aria-label': label });
+  for (const period of history.periods) {
+    svg.append(createSvgElement('rect', {
+      class: `war-history-period owner-${period.ownerKey || 'unrecorded'}`,
+      x: ((period.fromTimestamp - start) / span * 1000).toFixed(2), y: 0,
+      width: Math.max(0.5, (period.toTimestamp - period.fromTimestamp) / span * 1000).toFixed(2), height: 20,
+    }));
+  }
+  return buildElement('div', { className: 'war-history-timeline' }, [
+    svg,
+    buildElement('p', { className: 'war-history-ends', attributes: { 'aria-hidden': 'true' } }, [
+      buildElement('span', { text: formatDate(start) }),
+      buildElement('span', { text: formatDate(history.recordEndTimestamp) }),
+    ]),
+    buildElement('ul', { className: 'war-history-legend' }, [...shareByOwner.keys()].map(key => buildElement('li', {}, [
+      buildElement('span', { className: `war-history-swatch owner-${key}`, attributes: { 'aria-hidden': 'true' } }),
+      key === 'unrecorded' ? 'Not recorded' : describeWarLogFactionAtStart(key),
+    ]))),
+    buildElement('details', { className: 'war-history-numbers', attributes: { 'data-drawer-keep-open': 'war-history-numbers' } }, [
+      buildElement('summary', { text: 'Show the numbers' }),
+      buildTable('Who held it when', ['From', 'To', 'Held by'], history.periods.map(period => [
+        formatDate(period.fromTimestamp), formatDate(period.toTimestamp),
+        period.ownerKey ? describeWarLogFactionAtStart(period.ownerKey) : 'Not recorded',
+      ])),
+    ]),
+  ]);
+}
+
+// One war-log line: when, and what happened.
+function buildWarLogItem(item) {
+  const look = { good: '✔', critical: '✖', warning: '⚠', neutral: '•' }[item.status];
+  const when = item.unrecordedFromTimestamp !== null
+    ? `Between ${formatDate(item.unrecordedFromTimestamp)} and ${formatDate(item.timestamp)} (not recorded)`
+    : item.approximate ? `Around ${formatDate(item.timestamp)}` : formatDateTime(item.timestamp);
+  return buildElement('li', { className: `event-item status-${item.status}` }, [
+    buildElement('span', { className: 'status-icon', text: look, attributes: { 'aria-hidden': 'true' } }),
+    buildElement('span', { className: 'event-time', text: when }),
+    buildElement('span', { className: 'event-text', text: item.text }),
+  ]);
+}
+
+// The drawer's "War history" part for one planet.
+function buildPlanetWarHistory(planetIndex) {
+  const history = describePlanetWarHistory(planetIndex);
+  const heading = buildElement('h3', { text: 'War history' });
+  if (history.status === 'loading') return [heading, buildElement('p', { className: 'section-hint', text: 'Loading the war history…' })];
+  if (history.status === 'unavailable') {
+    return [heading, buildElement('p', { className: 'section-hint',
+      text: 'The war history couldn\'t be loaded (offline, or a downloaded copy without internet).' })];
+  }
+  if (history.status === 'none') return [heading, buildElement('p', { className: 'section-hint', text: 'Nothing recorded for this planet yet.' })];
+
+  const summary = history.changeCount === 0
+    ? `No change of hands recorded since ${formatDate(history.recordedSinceTimestamp)}.`
+    : `Since ${formatDate(history.recordedSinceTimestamp)}: changed hands ${history.changeCount} ${history.changeCount === 1 ? 'time' : 'times'} `
+      + `(${history.liberatedCount} liberated, ${history.lostCount} lost).`;
+  const held = history.heldShare === null ? null
+    : history.heldShare === 0 ? 'Super Earth never held it in the recorded time.'
+    : `Super Earth held it ${Math.round(history.heldShare * 100)}% of the recorded time.`;
+  const defenses = !history.defenses ? null
+    : history.defenses.held + history.defenses.failed === 0 ? `No defenses since ${formatDate(history.defenses.sinceTimestamp)}.`
+    : `Defenses since ${formatDate(history.defenses.sinceTimestamp)}: ${history.defenses.held} held, ${history.defenses.failed} failed.`;
+
+  const shown = history.log.slice(0, WAR_LOG_ENTRIES_SHOWN);
+  const rest = history.log.slice(WAR_LOG_ENTRIES_SHOWN);
+  return [
+    heading,
+    buildElement('p', { className: 'war-history-summary', text: [summary, held].filter(Boolean).join(' ') }),
+    defenses ? buildElement('p', { className: 'section-hint', text: defenses }) : null,
+    buildWarHistoryStrip(history),
+    history.log.length > 0 ? buildElement('ol', { className: 'event-list war-log' }, shown.map(buildWarLogItem)) : null,
+    rest.length > 0 ? buildElement('details', { className: 'war-log-more', attributes: { 'data-drawer-keep-open': 'war-log-more' } }, [
+      buildElement('summary', { text: `Show all ${history.log.length}` }),
+      buildElement('ol', { className: 'event-list war-log' }, rest.map(buildWarLogItem)),
+    ]) : null,
+    buildElement('p', { className: 'section-hint war-history-sources' }, [
+      describeWarLogSources(history.archive, history.ours), ' ',
+      history.archive ? buildElement('a', { text: 'About the archive', attributes: { href: WAR_HISTORY_ARCHIVE_URL, target: '_blank', rel: 'noopener noreferrer' } }) : null,
+    ]),
+  ].filter(Boolean);
+}
+
 // ── PLANET DRAWER ────────────────────────────────────────────────────────────
 // Everything about one planet in one panel, opened from the map, the gambit panel, the
 // simple-mode cards and Major Order tasks. It sits beside the page on a wide screen and is a
 // bottom sheet on a phone. It is not modal: the map keeps working behind it, another planet
 // just changes what it shows, and Esc or the close button shuts it.
 
-const planetDrawerState = { planetIndex: null, openerSelector: null };
+const planetDrawerState = { planetIndex: null, openerSelector: null, renderedPlanetIndex: null };
 
 // A selector that finds the element that opened the drawer again after a re-render.
 function describeDrawerOpener(element) {
@@ -6823,6 +7134,8 @@ function buildPlanetDrawerBody(details) {
     ]))));
   }
 
+  sections.push(...buildPlanetWarHistory(planet.index));
+
   const guideEntry = details.guideEntryId ? findGuideEntry(getGuideData(), details.guideEntryId) : null;
   const watched = isWatched(planet.index);
   sections.push(buildElement('div', { className: 'planet-drawer-actions' }, [
@@ -6841,18 +7154,27 @@ function buildPlanetDrawerBody(details) {
 }
 
 // Fills the drawer for the planet it is open on (called on open and on every refresh).
-// Keeps keyboard focus on the same control when the content is rebuilt.
+// Keeps keyboard focus on the same control, and the war history's opened lists open, when the
+// content is rebuilt for the same planet. Asks for the war log the first time.
 function renderPlanetDrawer() {
   const drawer = document.getElementById('planet-drawer');
   if (!drawer || planetDrawerState.planetIndex === null) return;
   const planet = apiData.planetsByIndex[planetDrawerState.planetIndex];
   const focusedInside = drawer.contains(document.activeElement) ? document.activeElement : null;
   const focusKey = focusedInside?.dataset?.drawerFocusKey || (focusedInside?.dataset?.openPlanet ? `planet-${focusedInside.dataset.openPlanet}` : null);
+  const samePlanet = planetDrawerState.renderedPlanetIndex === planetDrawerState.planetIndex;
+  const openKeys = samePlanet ? [...drawer.querySelectorAll('details[data-drawer-keep-open][open]')].map(element => element.dataset.drawerKeepOpen) : [];
+  refreshWarLogWhenNeeded();
 
   putTextInElement('planet-drawer-title', planet ? planet.name : 'Planet');
   const body = planet ? buildPlanetDrawerBody(describePlanetForDrawer(planet))
     : [buildElement('p', { className: 'empty-state', text: 'This planet is no longer in the feeds.' })];
   replaceContent('planet-drawer-body', body);
+  planetDrawerState.renderedPlanetIndex = planetDrawerState.planetIndex;
+  for (const key of openKeys) {
+    const element = drawer.querySelector(`details[data-drawer-keep-open="${key}"]`);
+    if (element) element.open = true;
+  }
 
   if (focusKey) {
     const again = drawer.querySelector(`[data-drawer-focus-key="${focusKey}"]`)
@@ -6887,6 +7209,7 @@ function closePlanetDrawer({ returnFocus = true } = {}) {
   const opener = planetDrawerState.openerSelector ? document.querySelector(planetDrawerState.openerSelector) : null;
   planetDrawerState.planetIndex = null;
   planetDrawerState.openerSelector = null;
+  planetDrawerState.renderedPlanetIndex = null;
   writePlanetToLocationHash(null);
   if (returnFocus && opener) opener.focus({ preventScroll: true });
 }

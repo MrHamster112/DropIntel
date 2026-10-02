@@ -54,7 +54,9 @@ Unofficial fan project, not affiliated with or endorsed by Arrowhead Game Studio
 Interactive Entertainment. HELLDIVERS™ 2 is their trademark. The planet landscapes are drawn by
 the page itself. Faction logos © Arrowhead Game Studios, as traced by Helldivers Wiki contributors.
 War data from the community APIs at api.helldivers2.dev and helldiverstrainingmanual.com, and
-from this repository's own war history.
+from this repository's own war history. Each planet's history from 2024 to 18 Aug 2026 is copied
+once from the community's [War History API](https://github.com/helldivers-2/War-History-API)
+(read every 6 hours, so those dates are approximate).
 
 ## Major Orders can be wrong
 

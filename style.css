@@ -26,6 +26,7 @@
   --status-critical: #d03b3b;
   --status-neutral:  #6b7a99;
 
+  --faction-humans:     #4a90d9;   /* Super Earth: identity only, as on the war history strip */
   --faction-terminids:  #c98500;
   --faction-automaton:  #e34948;
   --faction-illuminate: #9085e9;
@@ -1097,3 +1098,23 @@ input[type="search"] {
   .event-item { grid-template-columns: 1.4em minmax(0, 1fr); }
   .event-item .event-text { grid-column: 2; }
 }
+
+/* ── WAR HISTORY (planet drawer) ─────────────────────────────────────────── */
+.war-history-summary { margin: 0 0 4px; }
+.war-history-strip { display: block; width: 100%; height: 16px; margin-top: 8px; border-radius: 4px; background: var(--surface-raised); }
+.war-history-period.owner-humans { fill: var(--faction-humans); }
+.war-history-period.owner-terminids { fill: var(--faction-terminids); }
+.war-history-period.owner-automaton { fill: var(--faction-automaton); }
+.war-history-period.owner-illuminate { fill: var(--faction-illuminate); }
+.war-history-period.owner-unknown { fill: var(--faction-unknown); }
+.war-history-period.owner-unrecorded { fill: var(--text-muted); opacity: 0.35; }
+.war-history-ends { display: flex; justify-content: space-between; margin: 2px 0 6px; font-size: 0.8rem; color: var(--text-muted); }
+.war-history-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 6px; padding: 0; font-size: 0.85rem; color: var(--text-secondary); }
+.war-history-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.war-history-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: var(--faction-unknown); }
+.war-history-swatch.owner-humans { background: var(--faction-humans); }
+.war-history-swatch.owner-terminids { background: var(--faction-terminids); }
+.war-history-swatch.owner-automaton { background: var(--faction-automaton); }
+.war-history-swatch.owner-illuminate { background: var(--faction-illuminate); }
+.war-history-swatch.owner-unrecorded { background: var(--text-muted); opacity: 0.35; }
+.war-log-more > summary, .war-history-numbers > summary { cursor: pointer; color: var(--accent); min-height: 44px; display: flex; align-items: center; }
