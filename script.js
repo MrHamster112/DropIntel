@@ -235,6 +235,7 @@ const apiData = {
   majorOrderHistory: loadMajorOrderHistory(Date.now()), // [{timestamp, assignmentId, progress[]}]
   sharedHistory: null,        // the collector's history.json, converted; in memory only (SHARED WAR HISTORY)
   sharedHistoryStatus: 'loading', // 'loading' | 'loaded' | 'unavailable'
+  backupPlanetReadings: null, // the backup war status's numbers per planet, for comparing (WHEN THE TWO WAR SOURCES DISAGREE)
   warLog: null,               // war-log.json, converted: every change of hands per planet (WAR HISTORY OF A PLANET)
   warLogStatus: 'idle',       // 'idle' (not asked for yet) | 'loading' | 'loaded' | 'unavailable'
   restoredSnapshotTimestamp: null, // set while the page shows the saved snapshot (LAST-KNOWN-GOOD SNAPSHOT)
@@ -835,6 +836,7 @@ function applyCachedBackupWarStatus() {
     .filter(effect => isPlainObject(effect) && isFiniteNumber(effect.index));
   apiData.currentWarTimeSeconds = isFiniteNumber(cachedBackupWarStatus.time) ? cachedBackupWarStatus.time : 0;
   apiData.warTimeCapturedAtTimestamp = cachedBackupWarStatusTimestamp;
+  apiData.backupPlanetReadings = readBackupPlanetReadings(cachedBackupWarStatus, cachedBackupWarStatusTimestamp);
 
   const primaryDssIsMissing =
     apiData.currentDataSource === 'PRIMARY' && apiData.spaceStations.length === 0;
@@ -3582,6 +3584,166 @@ function buildConditionChips(planet, limit = 4) {
   return buildElement('ul', { className: 'chip-list', attributes: { 'aria-label': 'Conditions' } }, chips);
 }
 
+// ── WHEN THE TWO WAR SOURCES DISAGREE ────────────────────────────────────────
+// On 29 Sep 2026 the backup API had two planets' progress swapped (Brilliance and Luxuriant:
+// main 14.89% / 0.00%, backup 0.00% / 14.90%; the main one was right). With the main source on
+// screen, each battle planet is compared with the backup's war status, fetched every 5th refresh
+// anyway. When they differ by more than a few points, the planet's card and drawer say so with
+// both numbers, so players can switch the source in Settings. The page never guesses which one
+// is right, and doesn't compare owners: a planet just won would differ for a few minutes.
+
+const SOURCE_DISAGREEMENT_PERCENT_POINTS = 3;
+const SOURCE_COMPARISON_MAX_AGE_MILLISECONDS = 15 * 60 * 1000;
+
+// A backup war status's numbers per planet: { readAtTimestamp, byIndex: { index: { health,
+// eventHealth, eventMaxHealth } } }. Its planet health has no maximum; that is the planet's own,
+// the same in both sources.
+function readBackupPlanetReadings(warStatus, readAtTimestamp) {
+  const byIndex = {};
+  for (const status of asArray(warStatus?.planetStatus)) {
+    if (isPlainObject(status) && isFiniteNumber(status.index)) {
+      byIndex[status.index] = { health: isFiniteNumber(status.health) ? status.health : null, eventHealth: null, eventMaxHealth: null };
+    }
+  }
+  for (const event of asArray(warStatus?.planetEvents)) {
+    if (!isPlainObject(event) || !isFiniteNumber(event.planetIndex)) continue;
+    const reading = byIndex[event.planetIndex] || (byIndex[event.planetIndex] = { health: null });
+    reading.eventHealth = isFiniteNumber(event.health) ? event.health : null;
+    reading.eventMaxHealth = isFiniteNumber(event.maxHealth) ? event.maxHealth : null;
+  }
+  return { readAtTimestamp, byIndex };
+}
+
+// Where the main and backup sources disagree about a battle planet's progress, or null:
+// { label: 'liberated' | 'defended', mainPercent, backupPercent, readAtTimestamp }.
+function describeSourceDisagreement(planet, nowTimestamp = Date.now()) {
+  const readings = apiData.backupPlanetReadings;
+  if (apiData.currentDataSource !== 'PRIMARY' || !readings || !isFiniteNumber(readings.readAtTimestamp)) return null;
+  if (nowTimestamp - readings.readAtTimestamp > SOURCE_COMPARISON_MAX_AGE_MILLISECONDS) return null;
+  const backup = readings.byIndex[planet.index];
+  if (!backup) return null;
+  let comparison = null;
+  if (planetIsUnderAttack(planet)) {
+    if (isFiniteNumber(backup.eventHealth) && backup.eventMaxHealth > 0) {
+      comparison = { label: 'defended', mainPercent: getDefenseProgressPercent(planet.event),
+        backupPercent: Math.max(0, Math.min(100, (1 - backup.eventHealth / backup.eventMaxHealth) * 100)) };
+    }
+  } else if (apiData.indexesOfPlanetsWithActiveBattles.has(planet.index) && hasKnownHealth(planet) && isFiniteNumber(backup.health)) {
+    comparison = { label: 'liberated', mainPercent: getLiberationPercent(planet),
+      backupPercent: Math.max(0, Math.min(100, (1 - backup.health / planet.maxHealth) * 100)) };
+  }
+  if (!comparison || Math.abs(comparison.mainPercent - comparison.backupPercent) < SOURCE_DISAGREEMENT_PERCENT_POINTS) return null;
+  return { ...comparison, readAtTimestamp: readings.readAtTimestamp };
+}
+
+// "The two war sources disagree here…" for a planet's card or drawer, or null.
+function buildSourceDisagreementNote(planet) {
+  const disagreement = describeSourceDisagreement(planet);
+  if (!disagreement) return null;
+  return buildStatusLine({ status: 'warning', icon: '⚠',
+    text: `The two war sources disagree here: the main one says ${formatPercent(disagreement.mainPercent)} ${disagreement.label}, `
+      + `the backup ${formatPercent(disagreement.backupPercent)}. If one looks wrong, switch in Settings → Data source.` },
+  'verdict source-disagreement');
+}
+
+// ── WHAT MORE HELLDIVERS WOULD DO ────────────────────────────────────────────
+// For each battle: what 1,000 more Helldivers would change, from the numbers the page already
+// has. A defense's pace grows with its players; a liberation gains each newcomer's output per
+// hour (the planet's own figure, or the galaxy's median where its own can't be measured). An
+// estimate, and says so: it assumes newcomers fight like those already there.
+
+const REINFORCEMENT_HELLDIVERS = 1000;
+
+// What `extraPlayers` more Helldivers would do on a battle planet, or null when the numbers
+// can't say. Defense: { kind, winsBefore, winsAfter, flips, hoursBefore, hoursAfter,
+// projectedPercentAfter, playersNeeded }. Liberation: { kind, hoursBefore, hoursAfter, flips,
+// playersNeeded, basis: 'this planet' | 'galaxy average' }.
+function describeReinforcementImpact(planet, nowTimestamp = Date.now(), extraPlayers = REINFORCEMENT_HELLDIVERS) {
+  const trend = getPlanetTrend(planet);
+  const playerCount = planet.statistics?.playerCount || 0;
+  if (planetIsUnderAttack(planet)) {
+    const outlook = describeDefenseOutlook(planet, trend, nowTimestamp);
+    const rate = outlook.ratePercentPerHour;
+    if (!['on-track', 'at-risk', 'losing'].includes(outlook.verdict) || !isFiniteNumber(rate) || rate <= 0
+        || playerCount < MINIMUM_PLAYERS_FOR_OUTPUT_ESTIMATE || !isFiniteNumber(outlook.hoursLeft)) return null;
+    const rateAfter = rate * (playerCount + extraPlayers) / playerCount;
+    const percentLeft = 100 - outlook.progressPercent;
+    const hoursBefore = sanitizeHours(percentLeft / rate);
+    const hoursAfter = sanitizeHours(percentLeft / rateAfter);
+    const winsBefore = hoursBefore !== null && hoursBefore <= outlook.hoursLeft;
+    const winsAfter = hoursAfter !== null && hoursAfter <= outlook.hoursLeft;
+    return {
+      kind: 'defense', extraPlayers, winsBefore, winsAfter, flips: !winsBefore && winsAfter, hoursBefore, hoursAfter,
+      projectedPercentAfter: Math.min(100, outlook.progressPercent + rateAfter * outlook.hoursLeft),
+      playersNeeded: outlook.playersNeededToWinInTime !== null ? Math.max(0, outlook.playersNeededToWinInTime - playerCount) : null,
+    };
+  }
+  if (!apiData.indexesOfPlanetsWithActiveBattles.has(planet.index) || !hasKnownHealth(planet)) return null;
+  const liberationPercent = getLiberationPercent(planet);
+  if (liberationPercent >= 100) return null;
+  const ownOutput = calculateOutputPerPlayer(planet, trend);
+  const outputPerPlayer = ownOutput ?? estimateGalaxyOutputPerPlayer();
+  if (!isFiniteNumber(outputPerPlayer) || outputPerPlayer <= 0) return null;
+  const regenPercentPerHour = getEnemyRegenPercentPerHour(planet);
+  const percentPerPlayer = outputPerPlayer / planet.maxHealth * 100;
+  // the measured pace when there is one; else what the output figure says today's players do
+  const netBefore = trend.status === 'measured' && !trend.isPinnedAtZero
+    ? trend.percentPerHour : playerCount * percentPerPlayer - regenPercentPerHour;
+  const netAfter = netBefore + extraPlayers * percentPerPlayer;
+  const hoursIfWinning = net => (net > TREND_STALL_THRESHOLD_PERCENT_PER_HOUR ? sanitizeHours((100 - liberationPercent) / net) : null);
+  const hoursBefore = hoursIfWinning(netBefore);
+  const hoursAfter = hoursIfWinning(netAfter);
+  // when the newcomers aren't enough: how many more it would take to start winning
+  const shortfall = netAfter <= TREND_STALL_THRESHOLD_PERCENT_PER_HOUR
+    ? Math.ceil((TREND_STALL_THRESHOLD_PERCENT_PER_HOUR - netAfter) / percentPerPlayer) + 1 : null;
+  return {
+    kind: 'liberation', extraPlayers, hoursBefore, hoursAfter, flips: hoursBefore === null && hoursAfter !== null,
+    playersNeeded: shortfall !== null ? extraPlayers + shortfall : null,
+    basis: ownOutput !== null ? 'this planet' : 'galaxy average',
+  };
+}
+
+// "About 6h" for an estimate in hours; past two weeks, "more than two weeks".
+function formatEstimatedHours(hours) {
+  return hours > ETA_LONGEST_HOURS ? 'more than two weeks' : `about ${formatDuration(hours * 3600)}`;
+}
+
+// The impact in one sentence, or null: "1,000 more Helldivers would …".
+function describeReinforcementLine(impact) {
+  if (!impact) return null;
+  const who = `${formatExactNumber(impact.extraPlayers)} more Helldivers`;
+  // an estimate, so to the nearest hundred
+  const needed = isFiniteNumber(impact.playersNeeded) && impact.playersNeeded > impact.extraPlayers
+    ? ` About ${formatExactNumber(Math.ceil(impact.playersNeeded / 100) * 100)} more are needed in all.` : '';
+  if (impact.kind === 'defense') {
+    if (impact.flips) return `${who} would save it: held in ${formatEstimatedHours(impact.hoursAfter)}, before the deadline (estimate).`;
+    if (impact.winsBefore) return `${who} would hold it sooner: in ${formatEstimatedHours(impact.hoursAfter)} instead of ${formatEstimatedHours(impact.hoursBefore)} (estimate).`;
+    return `${who} would raise it to about ${Math.round(impact.projectedPercentAfter)}% by the deadline: not enough on their own (estimate).${needed}`;
+  }
+  const basis = impact.basis === 'galaxy average' ? ', from the galaxy\'s average output per Helldiver' : '';
+  const stillSlow = impact.hoursAfter !== null && impact.hoursAfter > ETA_LONGEST_HOURS;
+  if (impact.flips) {
+    return stillSlow
+      ? `${who} would start winning it, slowly: liberation would still take more than two weeks (estimate${basis}).`
+      : `${who} would turn it around: liberated in ${formatEstimatedHours(impact.hoursAfter)} (estimate${basis}).`;
+  }
+  if (impact.hoursAfter !== null && impact.hoursBefore !== null) {
+    return stillSlow
+      ? `${who} wouldn't speed it up much: liberation would still take more than two weeks (estimate${basis}).`
+      : `${who} would liberate it in ${formatEstimatedHours(impact.hoursAfter)} instead of ${formatEstimatedHours(impact.hoursBefore)} (estimate${basis}).`;
+  }
+  if (impact.hoursAfter === null) return `${who} wouldn't be enough to beat the enemy's recovery here (estimate${basis}).${needed}`;
+  return null;
+}
+
+// The impact line for a planet's card or drawer, or null.
+function buildReinforcementNote(planet) {
+  const impact = describeReinforcementImpact(planet);
+  const text = describeReinforcementLine(impact);
+  if (!text) return null;
+  return buildStatusLine({ status: impact.flips ? 'good' : 'neutral', icon: '+', text }, 'verdict reinforcement-line');
+}
+
 // One planet card. Pass liberationOutlook for a liberation, defenseOutlook for
 // a defense; reasons are the "why this planet" chips.
 function buildPlanetCard(planet, { idPrefix, reasons = [], liberationOutlook = null,
@@ -3647,7 +3809,9 @@ function buildPlanetCard(planet, { idPrefix, reasons = [], liberationOutlook = n
       buildElement('p', { className: 'planet-card-headline', text: headline }),
       meter,
       buildStatusLine(verdictLine),
+      buildSourceDisagreementNote(planet),
       buildFactList(facts),
+      buildReinforcementNote(planet),
       buildConditionChips(planet),
       ...extraContent,
     ]),
@@ -5194,14 +5358,16 @@ function renderTrendGraphs() {
 
 const MAP_SIZE = 1000;
 const MAP_PADDING = 40;
-const MAP_ZOOM_LEVELS = [1, 2, 4];
+const MAP_ZOOM_LEVELS = [1, 2, 4];   // the zoom buttons' steps
+const MAP_MAX_ZOOM = 6;              // pinching can go a little further
+const MAP_DRAG_THRESHOLD_PIXELS = 6; // a smaller move is still a tap
 // The API's y grows upward (Super Earth at 0,0; the bot and bug fronts have
 // positive y), while SVG's y grows downward. The owner compared the result
 // with the in-game galaxy map on 30 Sep 2026: the same way up.
 const MAP_Y_AXIS_POINTS_UP = true;
 
 // Zoom and focus survive re-renders on every refresh.
-const mapViewState = { zoomLevel: 1, center: { x: MAP_SIZE / 2, y: MAP_SIZE / 2 }, focusedPlanetIndex: null };
+const mapViewState = { zoom: 1, center: { x: MAP_SIZE / 2, y: MAP_SIZE / 2 }, focusedPlanetIndex: null };
 
 // An API position {x, y} in -1…1 → SVG coordinates; null when unusable.
 function projectPlanetPosition(position, size = MAP_SIZE, padding = MAP_PADDING) {
@@ -5330,11 +5496,22 @@ function getMapMarkerScale(zoom, mapPixelWidth) {
   return narrowScreenBoost / Math.max(1, zoom);
 }
 
+// Sets the zoom (1 to MAP_MAX_ZOOM) and the centre, kept where the view stays on the map, and
+// shows it.
+function setMapView(zoom, center) {
+  const clampedZoom = Math.max(1, Math.min(MAP_MAX_ZOOM, isFiniteNumber(zoom) ? zoom : 1));
+  const halfWidth = MAP_SIZE / clampedZoom / 2;
+  const keepInside = value => Math.max(halfWidth, Math.min(MAP_SIZE - halfWidth, value));
+  mapViewState.zoom = clampedZoom;
+  mapViewState.center = { x: keepInside(center.x), y: keepInside(center.y) };
+  applyMapZoom();
+}
+
 // Applies the current zoom to the map without rebuilding it.
 function applyMapZoom() {
   const svg = document.querySelector('#output-war-map svg.war-map');
   if (!svg) return;
-  const viewBox = computeMapViewBox(MAP_ZOOM_LEVELS[mapViewState.zoomLevel - 1] || mapViewState.zoomLevel, mapViewState.center);
+  const viewBox = computeMapViewBox(mapViewState.zoom, mapViewState.center);
   svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
   const zoom = MAP_SIZE / viewBox.width;
   // keep labels and markers roughly the same on-screen size at every zoom
@@ -5344,19 +5521,96 @@ function applyMapZoom() {
     markerBody.setAttribute('transform', `scale(${markerScale})`);
   }
   svg.classList.toggle('is-zoomed', zoom > 1);
-  putTextInElement('map-zoom-level', `Zoom ×${zoom}`);
+  putTextInElement('map-zoom-level', `Zoom ×${Number(zoom.toFixed(1))}`);
 }
 
-// Zooms in or out one step, centred on the focused planet if there is one.
+// The zoom buttons: one step in or out (1, 2, 4), centred on the focused planet if there is
+// one, else where the view already is; 0 resets to the whole map.
 function changeMapZoom(step) {
-  const zoomLevels = MAP_ZOOM_LEVELS;
-  const currentPosition = Math.max(0, zoomLevels.indexOf(MAP_ZOOM_LEVELS[mapViewState.zoomLevel - 1]));
-  const nextPosition = step === 0 ? 0 : Math.max(0, Math.min(zoomLevels.length - 1, currentPosition + step));
-  mapViewState.zoomLevel = nextPosition + 1;
+  if (step === 0) {
+    setMapView(1, { x: MAP_SIZE / 2, y: MAP_SIZE / 2 });
+    return;
+  }
+  const current = mapViewState.zoom;
+  const next = step > 0
+    ? (MAP_ZOOM_LEVELS.find(level => level > current + 0.01) ?? current)
+    : ([...MAP_ZOOM_LEVELS].reverse().find(level => level < current - 0.01) ?? 1);
   const focusedPlanet = apiData.planetsByIndex[mapViewState.focusedPlanetIndex];
   const focusedPoint = focusedPlanet ? projectPlanetPosition(focusedPlanet.position) : null;
-  mapViewState.center = step === 0 || !focusedPoint ? { x: MAP_SIZE / 2, y: MAP_SIZE / 2 } : focusedPoint;
-  applyMapZoom();
+  setMapView(next, focusedPoint || mapViewState.center);
+}
+
+// Fingers and the mouse on the map: drag to move a zoomed map, pinch with two fingers to zoom.
+// A tap (a move under MAP_DRAG_THRESHOLD_PIXELS) still opens a planet; a click right after a
+// drag or pinch doesn't. The map is rebuilt on every refresh, so this lives outside it.
+const mapGesture = { pointers: new Map(), moved: false, lastDistance: null };
+
+// The distance between the two fingers of a pinch, in pixels.
+function measurePinch() {
+  const [first, second] = [...mapGesture.pointers.values()];
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+// A finger or the mouse goes down on the map.
+function handleMapPointerDown(event) {
+  if (mapGesture.pointers.size === 0) mapGesture.moved = false;
+  mapGesture.pointers.set(event.pointerId ?? 0, { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY });
+  mapGesture.lastDistance = mapGesture.pointers.size === 2 ? measurePinch() : null;
+}
+
+// Moves the map with one pointer, zooms it with two.
+function handleMapPointerMove(event) {
+  const pointer = mapGesture.pointers.get(event.pointerId ?? 0);
+  if (!pointer) return;
+  const svg = event.currentTarget;
+  const pixelWidth = svg.getBoundingClientRect().width || svg.clientWidth;
+  if (!pixelWidth) return;
+  if (mapGesture.pointers.size >= 2) {
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+    const distance = measurePinch();
+    if (mapGesture.lastDistance > 0 && distance > 0) setMapView(mapViewState.zoom * distance / mapGesture.lastDistance, mapViewState.center);
+    mapGesture.lastDistance = distance;
+    mapGesture.moved = true;
+    return;
+  }
+  const travelled = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY);
+  if (!mapGesture.moved && travelled < MAP_DRAG_THRESHOLD_PIXELS) return;
+  if (mapViewState.zoom <= 1) return; // the whole map is on screen: nothing to move
+  if (!mapGesture.moved && event.pointerId !== undefined && typeof svg.setPointerCapture === 'function') {
+    try { svg.setPointerCapture(event.pointerId); } catch { /* the pointer is already gone */ }
+  }
+  mapGesture.moved = true;
+  const unitsPerPixel = MAP_SIZE / mapViewState.zoom / pixelWidth;
+  setMapView(mapViewState.zoom, {
+    x: mapViewState.center.x - (event.clientX - pointer.x) * unitsPerPixel,
+    y: mapViewState.center.y - (event.clientY - pointer.y) * unitsPerPixel,
+  });
+  pointer.x = event.clientX;
+  pointer.y = event.clientY;
+}
+
+// A finger or the mouse lifts (or the browser takes the gesture over).
+function handleMapPointerEnd(event) {
+  mapGesture.pointers.delete(event.pointerId ?? 0);
+  if (mapGesture.pointers.size < 2) mapGesture.lastDistance = null;
+}
+
+// Swallows the click that ends a drag or a pinch, so it doesn't open a planet.
+function handleMapClickAfterGesture(event) {
+  if (!mapGesture.moved) return;
+  mapGesture.moved = false;
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+// Wires the gestures to a freshly drawn map.
+function wireMapGestures(svg) {
+  svg.addEventListener('pointerdown', handleMapPointerDown);
+  svg.addEventListener('pointermove', handleMapPointerMove);
+  svg.addEventListener('pointerup', handleMapPointerEnd);
+  svg.addEventListener('pointercancel', handleMapPointerEnd);
+  svg.addEventListener('click', handleMapClickAfterGesture, true);
 }
 
 // Shows a planet's numbers in the panel under the map.
@@ -5410,7 +5664,7 @@ function renderWarMap() {
 
   const svg = createSvgElement('svg', {
     class: 'war-map', viewBox: `0 0 ${MAP_SIZE} ${MAP_SIZE}`, role: 'group',
-    'aria-label': 'Galactic war map. Tab moves between planets being fought over; arrow keys move to the nearest planet in that direction; Enter shows a planet\'s details beside the map, and Escape closes them.',
+    'aria-label': 'Galactic war map. Tab moves between planets being fought over; arrow keys move to the nearest planet in that direction; Enter shows a planet\'s details beside the map, and Escape closes them. On a touch screen, pinch to zoom and drag to move.',
   });
 
   const supplyLayer = createSvgElement('g', { class: 'map-supply-lines', 'aria-hidden': 'true' });
@@ -5481,6 +5735,7 @@ function renderWarMap() {
     if (marker) openPlanetDrawer(Number(marker.dataset.planetIndex), { opener: marker, moveFocus: false });
   });
   svg.addEventListener('keydown', handleMapKeydown);
+  wireMapGestures(svg);
 
   // Builds one legend entry: a swatch drawn the way the map draws it, plus words.
   const legendItem = (swatchClass, label) => buildElement('li', {}, [
@@ -7279,6 +7534,10 @@ function buildPlanetDrawerBody(details) {
     ['Enemy recovers', details.kind === 'liberation' && isFiniteNumber(details.regenPercentPerHour) ? formatEnemyRecovery(details.regenPercentPerHour) : null],
     ['Net pace', details.kind !== 'quiet' ? (isFiniteNumber(details.netPercentPerHour) ? formatPercentPerHour(details.netPercentPerHour) : 'measuring…') : null],
   ]));
+  const disagreementNote = buildSourceDisagreementNote(planet);
+  if (disagreementNote) sections.push(disagreementNote);
+  const reinforcementNote = buildReinforcementNote(planet);
+  if (reinforcementNote) sections.push(reinforcementNote);
 
   sections.push(buildElement('h3', { text: 'Modifiers' }));
   sections.push(details.modifiers.length > 0
@@ -7421,11 +7680,80 @@ function handleDrawerClicks(event) {
 
 // Esc closes the drawer from anywhere on the page.
 function handleDrawerKeydown(event) {
-  if (event.key !== 'Escape') return;
   const drawer = document.getElementById('planet-drawer');
   if (!drawer || drawer.hidden) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closePlanetDrawer();
+  } else if (event.key === 'Tab' && isBottomSheetDrawer()) {
+    keepFocusInDrawer(event, drawer);
+  }
+}
+
+// True when the drawer is a bottom sheet over the page (a phone), not a panel beside it.
+function isBottomSheetDrawer() {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 700px)').matches;
+}
+
+// The drawer's controls Tab can reach, in order (not those inside a closed "Show all").
+function listDrawerFocusables(drawer) {
+  return [...drawer.querySelectorAll('a[href], button:not([disabled]), input, select, summary, [tabindex="0"]')].filter(element => {
+    if (element.closest('[hidden]')) return false;
+    const closedDetails = element.closest('details:not([open])');
+    return !closedDetails || element === closedDetails.querySelector(':scope > summary');
+  });
+}
+
+// On a phone the sheet covers the page, so Tab goes round inside it instead of behind it.
+function keepFocusInDrawer(event, drawer) {
+  const focusables = listDrawerFocusables(drawer);
+  if (focusables.length === 0) return;
+  const position = focusables.indexOf(document.activeElement);
+  const leavesBackwards = event.shiftKey && position <= 0;
+  const leavesForwards = !event.shiftKey && (position === focusables.length - 1 || !drawer.contains(document.activeElement));
+  if (!leavesBackwards && !leavesForwards) return;
   event.preventDefault();
-  closePlanetDrawer();
+  (leavesBackwards ? focusables[focusables.length - 1] : focusables[0]).focus();
+}
+
+// Swiping the phone's bottom sheet down by its header closes it; a short swipe springs back.
+const DRAWER_SWIPE_CLOSE_PIXELS = 80;
+const drawerSwipe = { startY: null, offset: 0 };
+
+// A finger goes down on the drawer's header (not on its close button).
+function handleDrawerSwipeStart(event) {
+  if (!isBottomSheetDrawer() || (event.target.closest && event.target.closest('button, a'))) return;
+  drawerSwipe.startY = event.clientY;
+  drawerSwipe.offset = 0;
+}
+
+// The sheet follows the finger down.
+function handleDrawerSwipeMove(event) {
+  if (drawerSwipe.startY === null) return;
+  drawerSwipe.offset = Math.max(0, event.clientY - drawerSwipe.startY);
+  const drawer = document.getElementById('planet-drawer');
+  if (drawer) drawer.style.transform = drawerSwipe.offset > 0 ? `translateY(${drawerSwipe.offset}px)` : '';
+}
+
+// Far enough down closes it; otherwise it goes back up.
+function handleDrawerSwipeEnd() {
+  if (drawerSwipe.startY === null) return;
+  const shouldClose = drawerSwipe.offset >= DRAWER_SWIPE_CLOSE_PIXELS;
+  drawerSwipe.startY = null;
+  drawerSwipe.offset = 0;
+  const drawer = document.getElementById('planet-drawer');
+  if (drawer) drawer.style.transform = '';
+  if (shouldClose) closePlanetDrawer();
+}
+
+// Wires the swipe: down on the header, then moves and lifts anywhere.
+function wireDrawerSwipe() {
+  const header = document.querySelector('#planet-drawer .planet-drawer-header');
+  if (!header) return;
+  header.addEventListener('pointerdown', handleDrawerSwipeStart);
+  document.addEventListener('pointermove', handleDrawerSwipeMove);
+  document.addEventListener('pointerup', handleDrawerSwipeEnd);
+  document.addEventListener('pointercancel', handleDrawerSwipeEnd);
 }
 
 // ── ADVANCED NAVIGATION ──────────────────────────────────────────────────────
@@ -9075,6 +9403,7 @@ function startApp() {
   document.addEventListener('visibilitychange', handleVisibilityChange);
   document.addEventListener('click', handleDrawerClicks);
   document.addEventListener('keydown', handleDrawerKeydown);
+  wireDrawerSwipe();
 
   applySiteEmblem();
   wireAdvancedNavigation();

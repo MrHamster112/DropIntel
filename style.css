@@ -527,7 +527,11 @@ rect.pressure-helldivers { fill: var(--accent); }
   border-radius: var(--radius);
   overflow: hidden;
 }
-svg.war-map { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; max-height: 80vh; margin: 0 auto; --map-scale: 1; }
+svg.war-map { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; max-height: 80vh; margin: 0 auto; --map-scale: 1;
+  /* a finger scrolls the page up and down over the whole map; pinching zooms the map, and once
+     zoomed in, dragging moves it (script.js: wireMapGestures) */
+  touch-action: pan-y; }
+svg.war-map.is-zoomed { touch-action: none; cursor: grab; }
 
 .map-supply-line { stroke: var(--border-strong); stroke-width: calc(1.5px * var(--map-scale)); }
 /* Enemy attacks are rare and matter most, so they are thicker than Super Earth's own lanes. */
@@ -1017,6 +1021,12 @@ input[type="search"] {
     border-top: 1px solid var(--border-strong);
     border-radius: 12px 12px 0 0;
     box-shadow: 0 -8px 24px var(--shadow-drawer);
+  }
+  /* the header is the sheet's handle: swipe it down to close (script.js: wireDrawerSwipe) */
+  .planet-drawer-header { touch-action: none; padding-top: 18px; }
+  .planet-drawer-header::before {
+    content: ''; position: absolute; top: 6px; left: 50%; width: 40px; height: 4px; margin-left: -20px;
+    border-radius: 2px; background: var(--border-strong);
   }
 }
 
