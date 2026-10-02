@@ -6566,6 +6566,9 @@ function describeMajorOrderPaceCaveat(paceMinutes) {
 
 const CAMPAIGN_REWARD_RULES = ['majority', 'all'];
 const CAMPAIGN_ORDER_RESULTS = ['won', 'lost'];
+// Every Galactic Campaign has three Major Orders (the owner, 2 Oct 2026), so a campaign counts at
+// least three, whatever the file says; a larger orderCount there still counts.
+const CAMPAIGN_ORDER_COUNT = 3;
 
 // The campaigns from galactic-campaigns.js, cleaned. An entry of the wrong shape is left out;
 // readable is false when the file is missing or has a mistake (it then never loaded).
@@ -6579,7 +6582,7 @@ function getGalacticCampaigns() {
       name: typeof entry.name === 'string' ? entry.name.trim() : '',
       reward: typeof entry.reward === 'string' && entry.reward.trim() ? entry.reward.trim() : null,
       rewardNeeds: CAMPAIGN_REWARD_RULES.includes(entry.rewardNeeds) ? entry.rewardNeeds : 'majority',
-      orderCount: Number.isInteger(entry.orderCount) && entry.orderCount >= orders.length ? entry.orderCount : orders.length,
+      orderCount: Math.max(CAMPAIGN_ORDER_COUNT, orders.length, Number.isInteger(entry.orderCount) ? entry.orderCount : 0),
       orders,
     };
   }).filter(campaign => campaign.name !== '' && campaign.orders.length > 0);
@@ -6650,12 +6653,12 @@ function describeCampaignOutlook(campaign, position, assignment, nowTimestamp = 
     return withLine('good', '✔', `${lead} Every task of this order is done.`);
   }
   if (orderPace === 'on-pace') {
-    return withLine('good', '✔', `${lead} At the current pace, it will be won in time (an estimate).`);
+    return withLine('good', '✔', `${lead} At the current pace, this order will be won in time (an estimate).`);
   }
   if (orderPace === 'behind') {
-    return withLine('warning', '▲', `${lead} At the current pace, it won't be won in time (an estimate).`);
+    return withLine('warning', '▲', `${lead} At the current pace, this order won't be won in time (an estimate).`);
   }
-  return withLine('neutral', '…', `${lead} Not enough data yet to say whether it will be won.`);
+  return withLine('neutral', '…', `${lead} Not enough data yet to say whether this order will be won.`);
 }
 
 // One order in the campaign's list: its number, name and state.
