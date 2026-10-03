@@ -3256,6 +3256,31 @@ function rankDefenses(nowTimestamp = Date.now()) {
       ((first.outlook.hoursLeft ?? Infinity) - (second.outlook.hoursLeft ?? Infinity)));
 }
 
+// Where to drop, best first: the Major Order's planets (a defense that needs help, then a
+// liberation, then a defense on track), then the other planets under attack (those that need help
+// first), then the liberations by rankLiberationCampaigns(). A defense has a deadline and a
+// liberation doesn't, so every open defense comes before any liberation (the owner, 3 Oct 2026:
+// slow liberations had filled the list). Entries carry kind: 'defense' | 'liberation'.
+function rankDropTargets(nowTimestamp = Date.now()) {
+  const defenses = rankDefenses(nowTimestamp)
+    .filter(entry => entry.outlook.verdict !== 'won' && entry.outlook.verdict !== 'expired')
+    .map(entry => ({ ...entry, kind: 'defense', needsHelp: entry.outlook.verdict !== 'on-track' }));
+  const liberations = rankLiberationCampaigns(nowTimestamp).map(entry => ({ ...entry, kind: 'liberation' }));
+  const tierOf = entry => (entry.kind === 'liberation'
+    ? (entry.isMajorOrderPlanet ? 1 : 5)
+    : entry.isMajorOrderPlanet ? (entry.needsHelp ? 0 : 2) : (entry.needsHelp ? 3 : 4));
+  // within a tier each list keeps its own order: defenses by urgency, liberations by score
+  return [...defenses, ...liberations]
+    .map((entry, position) => ({ entry, position, tier: tierOf(entry) }))
+    .sort((first, second) => (first.tier - second.tier) || (first.position - second.position))
+    .map(item => item.entry);
+}
+
+// The cards Where to drop shows: the best few, the chosen front's first.
+function listSimpleDropTargets(nowTimestamp = Date.now()) {
+  return orderByMyFront(rankDropTargets(nowTimestamp)).slice(0, SIMPLE_MODE_DROP_TARGET_COUNT);
+}
+
 // Players, campaigns and defenses per enemy faction, biggest front first.
 function summarizeFronts() {
   const frontByFaction = {};
@@ -4097,16 +4122,25 @@ function buildTaskSentenceWithPlanet(sentence, planet) {
   ].filter(Boolean);
 }
 
-// Every planet under attack, most urgent first, as cards → #simple-defenses
+// Every planet under attack that Where to drop doesn't already show, most urgent first, as
+// cards → #simple-defenses
 function renderSimpleDefenses() {
   if (!hasAnyData()) {
     replaceContent('simple-defenses', [buildWaitingMessage()]);
     return;
   }
-  const defenses = rankDefenses();
-  if (defenses.length === 0) {
+  const allDefenses = rankDefenses();
+  if (allDefenses.length === 0) {
     replaceContent('simple-defenses', [buildStatusLine(
       { status: 'good', icon: '✔', text: 'No planets under attack right now.' }, 'empty-state')]);
+    return;
+  }
+  const shownAbove = new Set(listSimpleDropTargets().map(entry => entry.planet.index));
+  const defenses = allDefenses.filter(entry => !shownAbove.has(entry.planet.index));
+  if (defenses.length === 0) {
+    replaceContent('simple-defenses', [buildStatusLine({ status: 'neutral', icon: '↑',
+      text: `${allDefenses.length === 1 ? 'The planet' : `All ${allDefenses.length} planets`} under attack ${allDefenses.length === 1 ? 'is' : 'are'} in Where to drop, above.` },
+    'empty-state')]);
     return;
   }
   replaceContent('simple-defenses', defenses.map(entry => buildPlanetCard(entry.planet, {
@@ -4118,13 +4152,13 @@ function renderSimpleDefenses() {
   })));
 }
 
-// The few liberation campaigns that matter most right now → #simple-drop-targets
+// The few battles that matter most right now, defenses and liberations → #simple-drop-targets
 function renderSimpleDropTargets() {
   if (!hasAnyData()) {
     replaceContent('simple-drop-targets', [buildWaitingMessage()]);
     return;
   }
-  const ranked = orderByMyFront(rankLiberationCampaigns()).slice(0, SIMPLE_MODE_DROP_TARGET_COUNT);
+  const ranked = listSimpleDropTargets();
   const frontNote = document.getElementById('drop-targets-front-note');
   if (frontNote) {
     frontNote.hidden = myFront === 'all';
@@ -4132,14 +4166,17 @@ function renderSimpleDropTargets() {
   }
   if (ranked.length === 0) {
     replaceContent('simple-drop-targets', [buildElement('p', {
-      className: 'empty-state', text: 'No liberation campaigns are open right now.' })]);
+      className: 'empty-state', text: 'No battles are open right now.' })]);
     return;
   }
   replaceContent('simple-drop-targets', ranked.map(entry => buildPlanetCard(entry.planet, {
     idPrefix: 'simple-drop',
-    liberationOutlook: entry.outlook,
+    liberationOutlook: entry.kind === 'liberation' ? entry.outlook : null,
+    defenseOutlook: entry.kind === 'defense' ? entry.outlook : null,
     reasons: [myFront !== 'all' && getEnemyFactionOnPlanet(entry.planet) === myFront ? 'Your front' : null,
-      ...entry.reasons].filter(Boolean).slice(0, 2),
+      ...(entry.kind === 'defense'
+        ? [entry.isMajorOrderPlanet ? 'Major Order target' : null, entry.needsHelp ? 'Under attack: needs help' : 'Under attack']
+        : entry.reasons)].filter(Boolean).slice(0, 2),
     isMajorOrderPlanet: entry.isMajorOrderPlanet,
     extraContent: [buildPlanetDrawerButton(entry.planet, `More about ${entry.planet.name}`, 'link-button planet-card-more')],
   })));
@@ -8642,6 +8679,7 @@ function changeMyFront(front) {
   myFront = front;
   writeStoredValue(MY_FRONT_STORAGE_KEY, front);
   renderSimpleDropTargets();
+  renderSimpleDefenses();
 }
 
 // Ranked liberation campaigns with the chosen front's planets first, each list keeping its
