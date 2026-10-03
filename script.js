@@ -187,12 +187,16 @@ function normalizePlanet(planet) {
 }
 
 // Cleans one city (the war feed's "region") so the cities section can trust its shape; null if
-// it has no name. Health is null while nobody fights for it.
+// it isn't one. Health is null while nobody fights for it. A city the feed sends without a name
+// (its names come from a community table, which can lag behind the game) is still shown.
 function normalizeRegion(region) {
-  if (!isPlainObject(region) || typeof region.name !== 'string' || region.name.trim() === '') return null;
+  if (!isPlainObject(region)) return null;
+  const id = isFiniteNumber(region.id) ? region.id : null;
+  const name = typeof region.name === 'string' && region.name.trim() !== '' ? region.name.trim()
+    : `Unnamed city${id !== null ? ` ${id + 1}` : ''}`;
   return {
-    id: isFiniteNumber(region.id) ? region.id : null,
-    name: region.name.trim(),
+    id,
+    name,
     description: typeof region.description === 'string' ? region.description : '',
     size: typeof region.size === 'string' ? region.size : '',
     health: isFiniteNumber(region.health) ? region.health : null,

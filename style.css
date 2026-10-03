@@ -1069,11 +1069,13 @@ input[type="search"] {
 .event-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .event-item {
   display: grid;
-  grid-template-columns: 1.4em minmax(0, auto) minmax(0, 1fr);
+  /* the time takes at most about half the row and wraps, so a long one ("Between 23 Nov 2025 and
+     29 Sept 2026 (not recorded)") can't squeeze the text into a column one letter wide */
+  grid-template-columns: 1.4em fit-content(45%) minmax(10em, 1fr);
   align-items: baseline;
   gap: 4px 10px;
 }
-.event-time { color: var(--text-muted); font-size: 0.85rem; white-space: nowrap; }
+.event-time { color: var(--text-muted); font-size: 0.85rem; }
 .event-text .link-button { font-weight: 700; }
 .event-item.status-good .status-icon     { color: var(--status-good); }
 .event-item.status-warning .status-icon  { color: var(--status-warning); }
