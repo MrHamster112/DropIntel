@@ -910,7 +910,8 @@ function overlayFreshBattleDataOntoPlanetList() {
     }
   }
   for (const planetUnderAttack of apiData.defenseEvents) {
-    freshestPlanetByIndex[planetUnderAttack.index] = planetUnderAttack;
+    const campaignCopy = freshestPlanetByIndex[planetUnderAttack.index];
+    freshestPlanetByIndex[planetUnderAttack.index] = campaignCopy ? keepCitiesWithHealth(planetUnderAttack, campaignCopy) : planetUnderAttack;
   }
 
   if (apiData.planets.length > 0) {
@@ -941,6 +942,14 @@ function overlayFreshBattleDataOntoPlanetList() {
   for (const planetUnderAttack of apiData.defenseEvents) {
     apiData.indexesOfPlanetsWithActiveBattles.add(planetUnderAttack.index);
   }
+}
+
+// A planet under attack comes twice, from /planet-events and from /campaigns, and the copies can
+// differ in their cities: the one whose cities carry a health has the fight's numbers. Without them
+// every city on WASAT read as ours on 3 Oct 2026, while the Automatons held both.
+function keepCitiesWithHealth(planet, otherCopy) {
+  const citiesWithHealth = copy => asArray(copy.regions).filter(region => region.health !== null).length;
+  return citiesWithHealth(otherCopy) > citiesWithHealth(planet) ? { ...planet, regions: otherCopy.regions } : planet;
 }
 
 // Everything that has to happen after fresh battle data lands.
