@@ -3996,6 +3996,7 @@ function buildPlanetCard(planet, { idPrefix, reasons = [], liberationOutlook = n
       buildElement('p', { className: 'planet-card-headline', text: headline }),
       meter,
       buildStatusLine(verdictLine),
+      buildCityRouteNote(planet),
       buildSourceDisagreementNote(planet),
       buildFactList(facts),
       buildReinforcementNote(planet),
@@ -7778,6 +7779,70 @@ function describeBestOpenCity(planet, cities = listPlanetCities(planet)) {
     + (progress !== null && best.liberationBonusPercent >= 100 - progress ? ': enough to finish it.' : '.');
 }
 
+// The city route for a planet's fight: the open city worth most, and whether securing it at its
+// measured pace wins the fight in time. WASAT on 3 Oct 2026: 47.7% defended at +3.21%/h was behind
+// pace, but DRYWELL, 6h from secured, adds 51.43%. Null without an open city that adds something.
+// { cityName, bonusPercent, cityHours, fightWord, verdict: 'wins' | 'sooner' | 'not-enough' |
+//   'too-slow' | 'unmeasured', hoursWithCity, hoursWithoutCity }
+function describeCityRoute(planet, nowTimestamp = Date.now(), cities = listPlanetCities(planet)) {
+  const city = cities.filter(entry => entry.state === 'open' && isFiniteNumber(entry.liberationBonusPercent))
+    .sort((first, second) => second.liberationBonusPercent - first.liberationBonusPercent)[0];
+  if (!city) return null;
+  const route = { cityName: city.name, bonusPercent: city.liberationBonusPercent, cityHours: city.hoursToSecure,
+    fightWord: city.fightWord, verdict: 'unmeasured', hoursWithCity: null, hoursWithoutCity: null };
+  if (!isFiniteNumber(city.hoursToSecure)) return route;
+  const trend = getPlanetTrend(planet);
+  if (planetIsUnderAttack(planet)) {
+    const outlook = describeDefenseOutlook(planet, trend, nowTimestamp);
+    if (outlook.hoursLeft === null) return route;
+    if (city.hoursToSecure > outlook.hoursLeft) return { ...route, verdict: 'too-slow' };
+    const pace = outlook.ratePercentPerHour > 0 ? outlook.ratePercentPerHour : 0;
+    const holdsWithout = outlook.progressPercent + pace * outlook.hoursLeft >= 100;
+    const holdsWith = outlook.progressPercent + pace * city.hoursToSecure + city.liberationBonusPercent >= 100
+      || outlook.progressPercent + pace * outlook.hoursLeft + city.liberationBonusPercent >= 100;
+    return { ...route, verdict: holdsWithout ? 'sooner' : holdsWith ? 'wins' : 'not-enough' };
+  }
+  if (!hasKnownHealth(planet)) return route;
+  const outlook = describeLiberationOutlook(planet, trend);
+  const net = outlook.verdict === 'winning' ? outlook.netPercentPerHour : 0;
+  const start = getLiberationPercent(planet);
+  route.hoursWithoutCity = net > 0 ? sanitizeHours((100 - start) / net) : null;
+  if (route.hoursWithoutCity !== null && route.hoursWithoutCity <= city.hoursToSecure) return { ...route, verdict: 'sooner', hoursWithCity: route.hoursWithoutCity };
+  const atCity = start + net * city.hoursToSecure + city.liberationBonusPercent;
+  route.hoursWithCity = atCity >= 100 ? city.hoursToSecure : net > 0 ? city.hoursToSecure + (100 - atCity) / net : null;
+  return { ...route, verdict: route.hoursWithCity === null ? 'not-enough' : route.hoursWithoutCity === null ? 'wins' : 'sooner' };
+}
+
+// The city route in one sentence, or null: "Securing DRYWELL (about 6h 16m to go) would add about
+// +51.43%: with it, WASAT's defense holds in time (estimate)."
+function describeCityRouteLine(route, planet) {
+  if (!route) return null;
+  const bonus = `${CITY_BONUS_CHECKED_IN_GAME ? '' : 'about '}+${formatPercent(route.bonusPercent, 2)}`;
+  const when = isFiniteNumber(route.cityHours) && route.cityHours <= ETA_LONGEST_HOURS ? ` (about ${formatDuration(route.cityHours * 3600)} to go)` : '';
+  const lead = `Securing ${route.cityName}${when} would add ${bonus} to ${planet.name}'s ${route.fightWord}`;
+  const isDefense = route.fightWord === 'defense';
+  switch (route.verdict) {
+    case 'wins': return isDefense
+      ? `${lead}: with it, the defense holds in time (estimate).`
+      : `${lead}: with it, ${planet.name} is liberated in about ${formatDuration(route.hoursWithCity * 3600)} (estimate).`;
+    case 'sooner': return isDefense || route.hoursWithCity === null || route.hoursWithCity >= route.hoursWithoutCity
+      ? `${lead}, and get it done sooner (estimate).`
+      : `${lead}: liberated in about ${formatDuration(route.hoursWithCity * 3600)} instead of ${formatEstimatedHours(route.hoursWithoutCity)} (estimate).`;
+    case 'not-enough': return `${lead}: not enough on its own (estimate).`;
+    case 'too-slow': return `${lead}, but at its pace that takes ${formatEstimatedHours(route.cityHours)}, after the defense ends (estimate).`;
+    default: return `${lead} (estimate; the city's pace is still being measured).`;
+  }
+}
+
+// The planet card's and drawer's city route line, or null.
+function buildCityRouteNote(planet) {
+  const route = describeCityRoute(planet);
+  if (!route || route.verdict === 'unmeasured') return null;
+  const text = describeCityRouteLine(route, planet);
+  const status = route.verdict === 'wins' || route.verdict === 'sooner' ? 'good' : route.verdict === 'unmeasured' ? 'neutral' : 'warning';
+  return buildStatusLine({ status, icon: status === 'good' ? '▲' : '•', text }, 'verdict city-route');
+}
+
 // A planet's cities, the ones being fought for first, then the biggest.
 function listPlanetCities(planet) {
   const stateOrder = { open: 0, locked: 1, liberated: 2, held: 3 };
@@ -7854,7 +7919,9 @@ function buildPlanetCities(planet) {
   const cities = listPlanetCities(planet);
   if (cities.length === 0) return [];
   const openCount = cities.filter(city => city.state === 'open').length;
-  const bestOpenCity = describeBestOpenCity(planet, cities);
+  // with a measured pace, whether the best city wins the fight; before that, how far it has got
+  const route = describeCityRoute(planet, Date.now(), cities);
+  const bestOpenCity = route && route.verdict !== 'unmeasured' ? describeCityRouteLine(route, planet) : describeBestOpenCity(planet, cities);
   const hasBonus = cities.some(city => isFiniteNumber(city.liberationBonusPercent));
   return [
     buildElement('h3', { text: `Cities (${cities.length})` }),
@@ -9896,9 +9963,23 @@ function describeOrderReason(pick, planet, nowTimestamp = Date.now()) {
     : `${lead}${where}.`;
 }
 
-// The order as a short message to paste in Discord: the pick, its line, and its link.
+// What else the pick's planet offers, line by line: securing its best open city (when that wins or
+// speeds up the fight), and for a defense, a gambit that ends the attack in time.
+function describeOrderExtras(planet, nowTimestamp = Date.now()) {
+  const route = describeCityRoute(planet, nowTimestamp);
+  const lines = [];
+  if (route && (route.verdict === 'wins' || route.verdict === 'sooner')) lines.push(describeCityRouteLine(route, planet));
+  if (planetIsUnderAttack(planet)) {
+    const gambit = describeGambitOption(planet, nowTimestamp);
+    if (gambit.verdict === 'in-time') lines.push(`Gambit: ${gambit.sentence}`);
+  }
+  return lines;
+}
+
+// The order as a short message to paste in Discord: the pick, its line (and what else it offers),
+// and its link.
 function describeOrderForDiscord(pick, planet, nowTimestamp = Date.now()) {
-  return [`Drop here now: ${planet.name}`, describeOrderReason(pick, planet, nowTimestamp),
+  return [`Drop here now: ${planet.name}`, describeOrderReason(pick, planet, nowTimestamp), ...describeOrderExtras(planet, nowTimestamp),
     `${PUBLIC_PAGE_ADDRESS}#planet=${planet.index}`].join('\n');
 }
 
@@ -9965,6 +10046,7 @@ function renderOrderForEveryone(nowTimestamp = Date.now()) {
       decision.pick.isMajorOrderPlanet ? buildElement('span', { className: 'reason reason-major-order', text: 'Major Order' }) : null,
     ]),
     buildElement('p', { className: 'order-reason', text: describeOrderReason(decision.pick, planet, nowTimestamp) }),
+    ...describeOrderExtras(planet, nowTimestamp).map(line => buildElement('p', { className: 'order-extra', text: line })),
     buildElement('p', { className: 'order-actions' }, [
       buildElement('button', { className: 'order-action', text: 'Copy for Discord', attributes: { type: 'button', 'data-order-copy': planet.index } }),
       buildElement('button', { className: 'order-action', text: 'Share as a picture', attributes: { type: 'button', 'data-order-picture': planet.index } }),

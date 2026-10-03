@@ -1148,6 +1148,7 @@ input[type="search"] {
 .order-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 8px; }
 .order-pick .order-pick-planet { font-size: 2rem; font-weight: 700; letter-spacing: 0.02em; }
 .order-reason { font-size: 1.05rem; margin: 0 0 12px; }
+.order-extra { margin: -6px 0 12px; color: var(--text-secondary); }
 .order-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 8px; }
 .order-action {
   min-height: 44px; padding: 8px 14px; border-radius: var(--radius); cursor: pointer;
