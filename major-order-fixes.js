@@ -20,7 +20,7 @@
 const MAJOR_ORDER_FIXES = {
   taskText: [
     // The Major Order of late September 2026 (the TD-110 Maelstrom one):
-    { pageSays: 'Kill 25.00M Terminids', showInstead: 'Kill 25.00M Chargers' },
-    { pageSays: 'Kill 5.00M Automatons', showInstead: 'Kill 5.00M Shredder Tanks' },
+    { pageSays: 'Objective (type 12): GATRIA, Terminids', showInstead: 'Defend GATRIA against 1 attacks from the Terminids' },
+    { pageSays: 'Objective (type 12): WASAT, Automatons', showInstead: 'Defend WASAT against 1 attacks from the Automatons' },
   ],
 };
