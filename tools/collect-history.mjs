@@ -4,10 +4,12 @@
 // on the orphan branch "war-history". Plain Node 22, no packages:
 //   node tools/collect-history.mjs history.json [war-log.json]
 // A missing or broken file starts a fresh one. When both APIs fail, the files are left alone.
+// The reading's new events also go to phones, through an ntfy.sh topic (tools/phone-alerts.mjs).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readWarLogFile, recordReadingInWarLog, seedWarLogFromHistory } from './war-log.mjs';
+import { buildPhoneAlerts, readPhoneAlertSettings, sendPhoneAlerts } from './phone-alerts.mjs';
 
 export const PRIMARY_API = 'https://api.helldivers2.dev';
 export const BACKUP_API = 'https://helldiverstrainingmanual.com/api/v1';
@@ -642,6 +644,18 @@ export function updateWarLog(warLog, historyBefore, snapshot, events, limits = H
   return warLog;
 }
 
+// Posts the reading's events to the phone-alert topic. Only warns when that fails.
+async function sendEventsToPhones(history, snapshot, events) {
+  const settings = readPhoneAlertSettings();
+  const alerts = buildPhoneAlerts(events, {
+    nameOfPlanet: (index) => planetName(history, snapshot, index),
+    battles: snapshot.battles,
+  });
+  const { sent, problems } = await sendPhoneAlerts(alerts, settings);
+  for (const problem of problems) console.log(`::warning::Phone alert not sent: ${problem}`);
+  if (sent > 0) console.log(`Phone alerts: ${sent} sent to the ntfy topic ${settings.topic}.`);
+}
+
 // The command line: reads the files, adds a reading, writes them back compactly.
 async function main() {
   const path = process.argv[2] || 'history.json';
@@ -657,6 +671,7 @@ async function main() {
   writeFileSync(path, JSON.stringify(history));
   console.log(`${snapshot.source}: ${snapshot.battles.length} battles, ${events.length} new events, `
     + `${Object.keys(history.planets).length} planets kept, ${Buffer.byteLength(JSON.stringify(history))} bytes.`);
+  await sendEventsToPhones(history, snapshot, events);
   if (warLogPath) {
     const warLog = readWarLogFile(warLogPath);
     if (!warLog) {

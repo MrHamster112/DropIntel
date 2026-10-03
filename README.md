@@ -20,6 +20,16 @@ front, watched planets, alerts, and an optional Google Gemini key for AI summari
 saved war status are kept only in your own browser. Alerts are off until you turn them on in Settings, and only work while the page is open. Links can point
 at a planet, for example `https://mrhamster112.github.io/DropIntel/#planet=Heeth`.
 
+## Alerts on your phone
+
+For alerts with the page closed, install the free [ntfy](https://ntfy.sh) app (Android or iPhone)
+and subscribe to the topic `dropintel` on ntfy.sh, or open
+[ntfy.sh/dropintel](https://ntfy.sh/dropintel) in a browser. DropIntel's war record posts there
+within 15 minutes of a change: a new Major Order and an attack on one of our planets (priority
+High), a defense held or failed, a planet liberated or lost. Set the topic's minimum priority to
+High in the app to get only the High ones. ntfy topics are public, so anyone who knows the name
+could post to it too; DropIntel's alerts are only ever about the war.
+
 ## Install it as an app
 
 On Android and Windows, DropIntel can be installed like an app from Chrome or Edge: it goes on

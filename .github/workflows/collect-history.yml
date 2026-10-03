@@ -42,6 +42,13 @@ jobs:
           if [ -f war-history/history.json ]; then cp war-history/history.json before.json; else touch before.json; fi
 
       - name: Record the war
+        env:
+          # Phone alerts (tools/phone-alerts.mjs): the new events go to this ntfy.sh topic. Set the
+          # repository variable NTFY_TOPIC (Settings > Secrets and variables > Actions > Variables)
+          # to use another topic, or to "off" to stop them; empty means "dropintel". NTFY_TOKEN, a
+          # secret, is only needed once the topic is reserved so that only DropIntel can post to it.
+          NTFY_TOPIC: ${{ vars.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
         run: node tools/collect-history.mjs war-history/history.json war-history/war-log.json
 
       - name: Save it to the war-history branch

@@ -990,6 +990,9 @@ input[type="search"] {
 .planet-drawer-header {
   position: sticky;
   top: 0;
+  /* above the drawer's link buttons, which are positioned (their tap area) and would otherwise
+     scroll over the title */
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1091,6 +1094,12 @@ input[type="search"] {
 .alert-master { font-weight: 600; }
 .alert-types { display: grid; gap: 4px; margin: 6px 0 4px 22px; }
 .alert-types label:has(input:disabled) { opacity: 0.6; }
+/* the ntfy.sh topic the collector posts to (tools/phone-alerts.mjs) */
+.phone-alerts { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.phone-alerts-title { margin: 0 0 4px; font-weight: 600; color: var(--text-primary); font-size: 0.9rem; }
+.phone-alerts-steps { margin: 0 0 6px; padding-left: 1.4em; color: var(--text-secondary); font-size: 0.9rem; }
+.phone-alerts-steps li + li { margin-top: 2px; }
+.phone-alerts code { font-weight: 700; color: var(--text-primary); }
 .install-settings { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 10px; margin: 0; display: grid; gap: 6px; justify-items: start; }
 .install-settings legend { color: var(--text-secondary); font-weight: 700; padding: 0 4px; }
 .install-settings .section-hint { margin: 0; }

@@ -107,7 +107,7 @@
       <fieldset class="alert-settings">
         <legend>Alerts</legend>
         <label class="alert-master"><input type="checkbox" id="alerts-enabled" aria-describedby="alerts-phone-note"> Alert me while this page is open (off by default)</label>
-        <p id="alerts-phone-note" class="section-hint">On phones, alerts only work while DropIntel is open on screen: phones pause pages in the background, and nothing sends alerts while the page is closed.</p>
+        <p id="alerts-phone-note" class="section-hint">On phones, alerts only work while DropIntel is open on screen: phones pause pages in the background. For alerts with the page closed, use ntfy (below).</p>
         <div class="alert-types" role="group" aria-label="What to alert about">
           <label><input type="checkbox" data-alert-type="newOrder"> A new Major Order</label>
           <label><input type="checkbox" data-alert-type="newDispatch"> A new dispatch</label>
@@ -116,6 +116,15 @@
           <label><input type="checkbox" data-alert-type="ownerChange"> Any planet is liberated or lost</label>
         </div>
         <p id="alerts-status" class="section-hint" aria-live="polite"></p>
+        <div id="phone-alerts" class="phone-alerts">
+          <p class="phone-alerts-title">Alerts on your phone, even with DropIntel closed</p>
+          <ol class="phone-alerts-steps">
+            <li>Install the free ntfy app (Android or iPhone, from <a href="https://ntfy.sh" rel="noopener noreferrer" target="_blank">ntfy.sh</a>), or open <a href="https://ntfy.sh/dropintel" rel="noopener noreferrer" target="_blank">ntfy.sh/dropintel</a> in a browser.</li>
+            <li>Subscribe to the topic <code id="phone-alerts-topic">dropintel</code> (server ntfy.sh). No account needed.</li>
+          </ol>
+          <p class="section-hint">DropIntel's war record posts there within 15 minutes of a change: a new Major Order and an attack on one of our planets (priority High), a defense held or failed and a planet liberated or lost. To get only the High ones, set the topic's minimum priority to High in the app.</p>
+          <p class="section-hint">ntfy topics are public, so anyone who knows the name could post to it too. DropIntel's alerts are only ever about the war.</p>
+        </div>
       </fieldset>
       <fieldset class="install-settings">
         <legend>Install as an app</legend>
