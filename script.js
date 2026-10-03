@@ -2966,15 +2966,29 @@ function describeLiberationOutlook(planet, trend, galaxyOutputPerPlayer = null) 
     outlook.playerOutputPercentPerHour = trend.percentPerHour + outlook.regenPercentPerHour;
   }
 
-  if (trend.isPinnedAtZero || Math.abs(trend.percentPerHour) <= TREND_STALL_THRESHOLD_PERCENT_PER_HOUR) {
-    outlook.verdict = 'stalled';
-  } else if (trend.percentPerHour > 0) {
+  if (!trend.isPinnedAtZero && paceIsWinning(trend.percentPerHour, outlook.regenPercentPerHour)) {
     outlook.verdict = 'winning';
     outlook.hoursToLiberation = sanitizeHours((100 - outlook.liberationPercent) / trend.percentPerHour);
-  } else {
+  } else if (!trend.isPinnedAtZero && trend.percentPerHour < -TREND_STALL_THRESHOLD_PERCENT_PER_HOUR) {
     outlook.verdict = 'losing';
+  } else {
+    outlook.verdict = 'stalled';
   }
   return outlook;
+}
+
+// True when a liberation pace really moves forward: faster than the stall threshold, which
+// keeps a pace that only wobbles around the enemy's recovery from counting, or forward at all
+// where the enemy barely recovers (Alaraph, 3 Oct 2026: 0.00%/h recovery, +0.01%/h). Nothing
+// holds such a planet back; it is only slow.
+function paceIsWinning(netPercentPerHour, regenPercentPerHour) {
+  if (!isFiniteNumber(netPercentPerHour) || netPercentPerHour <= 0) return false;
+  return netPercentPerHour > TREND_STALL_THRESHOLD_PERCENT_PER_HOUR || recoveryIsNegligible(regenPercentPerHour);
+}
+
+// True when the enemy's recovery is too small to stall anything (it reads 0.00%/h or so).
+function recoveryIsNegligible(regenPercentPerHour) {
+  return !isFiniteNumber(regenPercentPerHour) || regenPercentPerHour < TREND_STALL_THRESHOLD_PERCENT_PER_HOUR;
 }
 
 // Can this defense still be won before its deadline? Uses the measured trend,
@@ -3200,12 +3214,13 @@ function rankLiberationCampaigns(nowTimestamp = Date.now()) {
     if (isMajorOrderPlanet)         { score += 1000; reasons.push('Major Order target'); }
     if (countsForMajorOrderFaction) { score += 300;  reasons.push('Counts toward the Major Order'); }
 
-    if (outlook.verdict === 'winning') {
+    if (outlook.verdict === 'winning' && !(outlook.hoursToLiberation <= ETA_LONGEST_HOURS)) {
+      // moving, but too slowly for dropping here to finish anything soon
+      reasons.push('Winning slowly: more than two weeks at this pace');
+    } else if (outlook.verdict === 'winning') {
       score += 200;
-      if (outlook.hoursToLiberation !== null && outlook.hoursToLiberation < 6) score += 100;
-      if (outlook.hoursToLiberation !== null && outlook.hoursToLiberation <= ETA_LONGEST_HOURS) {
-        reasons.push(`Liberation in about ${formatDuration(outlook.hoursToLiberation * 3600)} at this pace`);
-      }
+      if (outlook.hoursToLiberation < 6) score += 100;
+      reasons.push(`Liberation in about ${formatDuration(outlook.hoursToLiberation * 3600)} at this pace`);
     } else if (outlook.verdict === 'stalled') {
       score -= 100;
       reasons.push('Stalled: enemy regeneration is keeping up');
@@ -3555,10 +3570,14 @@ function describeLiberationVerdict(outlook) {
       return { status: 'good', icon: '▲',
         text: `Winning — liberated in about ${formatDuration(outlook.hoursToLiberation * 3600)} at this pace` };
     case 'stalled':
-      return { status: 'warning', icon: '■',
-        text: outlook.playersNeededToOutpaceRegen
-          ? `Stalled — needs about ${formatBigNumber(outlook.playersNeededToOutpaceRegen)} Helldivers to out-fight the enemy's recovery`
-          : 'Stalled — the enemy recovers as fast as we push' };
+      // only the Helldivers missing: a total read as if the ones already here weren't there
+      if (outlook.playersNeededToOutpaceRegen > outlook.playerCount) {
+        return { status: 'warning', icon: '■',
+          text: `Stalled — about ${formatExactNumber(roundHelldiversUp(outlook.playersNeededToOutpaceRegen - outlook.playerCount))} more`
+            + ` Helldivers would out-fight the enemy's recovery (${outlook.playersNeededIsGalaxyEstimate ? 'estimate from other fronts' : 'estimate'})` };
+      }
+      return { status: 'warning', icon: '■', text: recoveryIsNegligible(outlook.regenPercentPerHour)
+        ? 'Stalled — no progress at the moment' : 'Stalled — the enemy recovers about as fast as we push' };
     case 'losing':
       return { status: 'critical', icon: '▼', text: 'Losing ground — the enemy is taking it back' };
     default:
@@ -3727,12 +3746,14 @@ function describeReinforcementImpact(planet, nowTimestamp = Date.now(), extraPla
   const netBefore = trend.status === 'measured' && !trend.isPinnedAtZero
     ? trend.percentPerHour : playerCount * percentPerPlayer - regenPercentPerHour;
   const netAfter = netBefore + extraPlayers * percentPerPlayer;
-  const hoursIfWinning = net => (net > TREND_STALL_THRESHOLD_PERCENT_PER_HOUR ? sanitizeHours((100 - liberationPercent) / net) : null);
+  const hoursIfWinning = net => (paceIsWinning(net, regenPercentPerHour) ? sanitizeHours((100 - liberationPercent) / net) : null);
   const hoursBefore = hoursIfWinning(netBefore);
   const hoursAfter = hoursIfWinning(netAfter);
-  // when the newcomers aren't enough: how many more it would take to start winning
-  const shortfall = netAfter <= TREND_STALL_THRESHOLD_PERCENT_PER_HOUR
-    ? Math.ceil((TREND_STALL_THRESHOLD_PERCENT_PER_HOUR - netAfter) / percentPerPlayer) + 1 : null;
+  // when the newcomers aren't enough: how many more it would take to start winning (any forward
+  // pace where the enemy barely recovers, else one past the stall threshold)
+  const winningPace = recoveryIsNegligible(regenPercentPerHour) ? 0 : TREND_STALL_THRESHOLD_PERCENT_PER_HOUR;
+  const shortfall = hoursAfter === null
+    ? Math.max(1, Math.ceil((winningPace - netAfter) / percentPerPlayer) + 1) : null;
   return {
     kind: 'liberation', extraPlayers, hoursBefore, hoursAfter, flips: hoursBefore === null && hoursAfter !== null,
     playersNeeded: shortfall !== null ? extraPlayers + shortfall : null,
@@ -3745,13 +3766,19 @@ function formatEstimatedHours(hours) {
   return hours > ETA_LONGEST_HOURS ? 'more than two weeks' : `about ${formatDuration(hours * 3600)}`;
 }
 
+// A Helldiver count from an estimate, rounded up: to tens under 100, else to hundreds.
+function roundHelldiversUp(count) {
+  const step = count < 100 ? 10 : 100;
+  return Math.max(step, Math.ceil(count / step) * step);
+}
+
 // The impact in one sentence, or null: "1,000 more Helldivers would …".
 function describeReinforcementLine(impact) {
   if (!impact) return null;
   const who = `${formatExactNumber(impact.extraPlayers)} more Helldivers`;
   // an estimate, so to the nearest hundred
   const needed = isFiniteNumber(impact.playersNeeded) && impact.playersNeeded > impact.extraPlayers
-    ? ` About ${formatExactNumber(Math.ceil(impact.playersNeeded / 100) * 100)} more are needed in all.` : '';
+    ? ` About ${formatExactNumber(roundHelldiversUp(impact.playersNeeded))} more are needed in all.` : '';
   if (impact.kind === 'defense') {
     if (impact.flips) return `${who} would save it: held in ${formatEstimatedHours(impact.hoursAfter)}, before the deadline (estimate).`;
     if (impact.winsBefore) return `${who} would hold it sooner: in ${formatEstimatedHours(impact.hoursAfter)} instead of ${formatEstimatedHours(impact.hoursBefore)} (estimate).`;
@@ -3766,7 +3793,7 @@ function describeReinforcementLine(impact) {
   }
   if (impact.hoursAfter !== null && impact.hoursBefore !== null) {
     return stillSlow
-      ? `${who} wouldn't speed it up much: liberation would still take more than two weeks (estimate${basis}).`
+      ? `${who} wouldn't be enough to finish it soon: liberation would still take more than two weeks (estimate${basis}).`
       : `${who} would liberate it in ${formatEstimatedHours(impact.hoursAfter)} instead of ${formatEstimatedHours(impact.hoursBefore)} (estimate${basis}).`;
   }
   if (impact.hoursAfter === null) return `${who} wouldn't be enough to beat the enemy's recovery here (estimate${basis}).${needed}`;
@@ -6034,7 +6061,9 @@ function scoreLiberationCandidate(planet, context) {
       `Launches the attack on ${launchPad.defensePlanet.name}: liberating it would end that attack`);
   }
 
-  if (outlook.verdict === 'winning') {
+  if (outlook.verdict === 'winning' && !(outlook.hoursToLiberation <= ETA_LONGEST_HOURS)) {
+    candidate.notes.push('Being won, but slowly: more than two weeks to liberation at the measured pace.');
+  } else if (outlook.verdict === 'winning') {
     addGambitReason(candidate, GAMBIT_WEIGHTS.liberationWinning,
       `Being won: about ${formatDuration(outlook.hoursToLiberation * 3600)} to liberation at the measured pace`);
     if (outlook.hoursToLiberation < GAMBIT_SOON_HOURS) addGambitReason(candidate, GAMBIT_WEIGHTS.liberationFinishingSoon, 'Close to finishing');
