@@ -38,6 +38,7 @@ export const HISTORY_LIMITS = {
 // What each sample array holds, written into the file so a reader doesn't have to guess.
 const SAMPLE_FIELDS = {
   planet: ['time', 'health', 'players', 'regenPerSecond', 'backupApiPercent'],
+  city: ['time', 'health', 'players', 'regenPerSecond', 'isAvailable', 'availabilityFactor'],
   fronts: ['time', 'allPlayers', ...ENEMY_FACTIONS],
   order: ['time', 'progress of each task…'],
 };
@@ -175,9 +176,11 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
   const backupPercentByIndex = readBackupPercents(backupWarStatus, backupCampaigns);
   const orderNames = readOrderNamesFromStatus(backupWarStatus);
   const battles = [];
+  const cities = [];
   for (const campaign of campaigns) {
     const planet = campaign?.planet;
     if (!Number.isInteger(planet?.index)) continue;
+    cities.push(...readContestedCities(planet));
     const event = planet.event && typeof planet.event === 'object' ? planet.event : null;
     if (typeof planet.currentOwner === 'string') owners[planet.index] = planet.currentOwner;
     battles.push({
@@ -209,6 +212,7 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
     takenAt,
     season: numberOrNull(warSeason?.id) ?? numberOrNull(backupWarStatus?.warId),
     battles,
+    cities,
     owners,
     allPlayers: numberOrNull(war?.statistics?.playerCount),
     orders: Array.isArray(assignments) ? assignments.map((order) => ({
@@ -283,6 +287,25 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
 
 // ── THE HISTORY FILE ─────────────────────────────────────────────────────────
 
+// A battle planet's cities (the primary API's "regions") that are in the enemy's hands, the ones
+// with a health: the page measures how fast each is liberated from these readings.
+function readContestedCities(planet) {
+  return (Array.isArray(planet.regions) ? planet.regions : [])
+    .filter((region) => region && Number.isInteger(region.id) && typeof region.health === 'number')
+    .map((region) => ({
+      planet: planet.index,
+      id: region.id,
+      name: typeof region.name === 'string' ? region.name : null,
+      size: typeof region.size === 'string' ? region.size : null,
+      health: region.health,
+      maxHealth: numberOrNull(region.maxHealth),
+      regenPerSecond: numberOrNull(region.regenPerSecond),
+      isAvailable: region.isAvailable === true,
+      availabilityFactor: numberOrNull(region.availabilityFactor),
+      players: numberOrNull(region.players) ?? 0,
+    }));
+}
+
 // A new, empty history.
 export function createEmptyHistory() {
   return {
@@ -293,6 +316,7 @@ export function createEmptyHistory() {
     source: null,
     season: null,
     planets: {},
+    cities: {},
     fronts: [],
     orders: {},
     events: [],
@@ -401,6 +425,16 @@ export function addSnapshot(history, snapshot) {
     segment.source = snapshot.source;
     segment.endsAt = battle.endsAt;
     segment.samples.push([time, battle.health, battle.players, roundRate(battle.regenPerSecond), battle.backupApiPercent ?? null]);
+  }
+
+  // the cities fought for, keyed "planet-city"; a new maxHealth is a new fight, so its samples start again
+  history.cities = history.cities || {};
+  for (const city of snapshot.cities || []) {
+    const key = `${city.planet}-${city.id}`;
+    let saved = history.cities[key];
+    if (!saved || saved.maxHealth !== city.maxHealth) saved = history.cities[key] = { samples: [] };
+    Object.assign(saved, { planet: city.planet, id: city.id, name: city.name, size: city.size, maxHealth: city.maxHealth });
+    saved.samples.push([time, city.health, city.players, roundRate(city.regenPerSecond), city.isAvailable ? 1 : 0, city.availabilityFactor]);
   }
 
   const playersByFront = Object.fromEntries(ENEMY_FACTIONS.map((faction) => [faction, 0]));
@@ -549,6 +583,10 @@ function applyRetention(history, now, keepSeconds, fullDetailSeconds, maxEvents)
     for (const segment of planet.segments) segment.samples = thinSamples(segment.samples, now, keepSeconds, fullDetailSeconds);
     planet.segments = planet.segments.filter((segment) => segment.samples.length > 0);
     if (planet.segments.length === 0) delete history.planets[index];
+  }
+  for (const [key, city] of Object.entries(history.cities || {})) {
+    city.samples = thinSamples(city.samples, now, keepSeconds, fullDetailSeconds);
+    if (city.samples.length === 0) delete history.cities[key];
   }
   history.fronts = thinSamples(history.fronts, now, keepSeconds, fullDetailSeconds);
   for (const [id, order] of Object.entries(history.orders)) {
