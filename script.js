@@ -4336,12 +4336,11 @@ function buildRegionTable(planet) {
   const regions = asArray(planet.regions);
   if (regions.length === 0) return null;
   return buildTable(`Cities on ${planet.name}`,
-    ['City', 'Size', 'Captured', 'Health vs planet', 'Recovers', 'Open', 'Helldivers'],
+    ['City', 'Size', 'Captured', CITY_BONUS_CHECKED_IN_GAME ? 'Liberation bonus' : 'Liberation bonus (estimate)', 'Recovers', 'Open', 'Helldivers'],
     regions.map(region => {
       const capturePercent = isFiniteNumber(region.health) && region.maxHealth > 0
         ? Math.max(0, Math.min(100, (1 - region.health / region.maxHealth) * 100)) : null;
-      const planetBonusPercent = region.maxHealth > 0 && planet.maxHealth > 0
-        ? region.maxHealth / planet.maxHealth * 100 : null;
+      const planetBonusPercent = estimateCityLiberationBonus(region, planet);
       const regionRegenPercent = isFiniteNumber(region.regenPerSecond) && region.maxHealth > 0
         ? region.regenPerSecond * 3600 / region.maxHealth * 100 : null;
       return [
@@ -7610,9 +7609,15 @@ function buildPlanetWarHistory(planetIndex) {
 const CITY_SIZE_ORDER = ['MegaCity', 'City', 'Town', 'Settlement'];
 const CITY_SIZE_WORDS = { MegaCity: 'Mega-city', City: 'City', Town: 'Town', Settlement: 'Settlement' };
 const CITY_STRIP_LIMIT = 4;   // cities named on a planet's card; the drawer has them all
+// Liberating a city adds a liberation bonus to its planet (the owner, 3 Oct 2026). The feed has no
+// bonus field, so the page estimates it as the city's health against the planet's: a city with a
+// quarter of the planet's health adds about 25%. Set this to true once one city's bonus in the game
+// matches the page's number; the page then stops calling it an estimate.
+const CITY_BONUS_CHECKED_IN_GAME = false;
 
 // One city in words: { name, sizeKey, sizeWord, state: 'held' | 'liberated' | 'open' | 'locked',
-// stateText, liberatedPercent, players, recoveryPercentPerHour, planetSharePercent, description }.
+// stateText, liberatedPercent, players, recoveryPercentPerHour, liberationBonusPercent (what
+// liberating it adds to the planet, estimated; null on a planet of ours), description }.
 function describeCity(region, planet) {
   const liberatedPercent = region.health !== null && region.maxHealth
     ? Math.max(0, Math.min(100, (1 - region.health / region.maxHealth) * 100)) : null;
@@ -7636,9 +7641,36 @@ function describeCity(region, planet) {
     liberatedPercent: state === 'held' ? null : liberatedPercent,
     players: region.players,
     recoveryPercentPerHour: region.regenPerSecond !== null && region.maxHealth ? region.regenPerSecond * 3600 / region.maxHealth * 100 : null,
-    planetSharePercent: region.maxHealth && planet.maxHealth > 0 ? region.maxHealth / planet.maxHealth * 100 : null,
+    liberationBonusPercent: estimateCityLiberationBonus(region, planet),
     description: stripGameMarkup(region.description || '').trim(),
   };
+}
+
+// What liberating a city adds to its planet's liberation, in %: the city's health against the
+// planet's (see CITY_BONUS_CHECKED_IN_GAME). Null on a planet of ours, or without the numbers.
+function estimateCityLiberationBonus(region, planet) {
+  if (normalizeFactionName(planet.currentOwner) === null || !region.maxHealth || !(planet.maxHealth > 0)) return null;
+  return region.maxHealth / planet.maxHealth * 100;
+}
+
+// "about +24% to the planet's liberation (estimate)", or without the hedge once checked in the game.
+function describeCityBonus(percent) {
+  return CITY_BONUS_CHECKED_IN_GAME
+    ? `+${formatPercent(percent, 0)} to the planet's liberation`
+    : `about +${formatPercent(percent, 0)} to the planet's liberation (estimate)`;
+}
+
+// The open city worth most to its planet, in one sentence, or null: "Liberating STARPASS would
+// add about +24% to ZEA RUGOSIA's liberation (estimate)", and whether that would finish the planet.
+function describeBestOpenCity(planet, cities = listPlanetCities(planet)) {
+  const best = cities.filter(city => city.state === 'open' && isFiniteNumber(city.liberationBonusPercent))
+    .sort((first, second) => second.liberationBonusPercent - first.liberationBonusPercent)[0];
+  if (!best) return null;
+  const estimate = CITY_BONUS_CHECKED_IN_GAME ? '' : ' (estimate)';
+  const left = hasKnownHealth(planet) ? 100 - getLiberationPercent(planet) : null;
+  return `Liberating ${best.name} would add ${CITY_BONUS_CHECKED_IN_GAME ? '' : 'about '}+${formatPercent(best.liberationBonusPercent, 0)}`
+    + ` to ${planet.name}'s liberation${estimate}`
+    + (left !== null && best.liberationBonusPercent >= left ? ': enough to finish it.' : '.');
 }
 
 // A planet's cities, the ones that can be fought first, then the biggest.
@@ -7688,7 +7720,8 @@ function buildCityCard(city) {
     buildFactList([
       ['Helldivers here', city.players > 0 || city.state === 'open' ? formatBigNumber(city.players) : null],
       ['Enemy recovers', city.state === 'open' && isFiniteNumber(city.recoveryPercentPerHour) ? formatEnemyRecovery(city.recoveryPercentPerHour) : null],
-      ['Health vs the planet', isFiniteNumber(city.planetSharePercent) ? `${formatPercent(city.planetSharePercent, 0)} of the planet's` : null],
+      ['Liberation bonus', isFiniteNumber(city.liberationBonusPercent)
+        ? `${describeCityBonus(city.liberationBonusPercent)}${city.state === 'liberated' ? ', already gained' : ''}` : null],
     ]),
     city.description ? buildElement('details', { className: 'city-about', attributes: { 'data-drawer-keep-open': `city-${city.name}` } }, [
       buildElement('summary', { text: 'About this city' }),
@@ -7702,11 +7735,16 @@ function buildPlanetCities(planet) {
   const cities = listPlanetCities(planet);
   if (cities.length === 0) return [];
   const openCount = cities.filter(city => city.state === 'open').length;
+  const bestOpenCity = describeBestOpenCity(planet, cities);
+  const hasBonus = cities.some(city => isFiniteNumber(city.liberationBonusPercent));
   return [
     buildElement('h3', { text: `Cities (${cities.length})` }),
-    buildElement('p', { className: 'section-hint', text: openCount > 0
+    bestOpenCity ? buildStatusLine({ status: 'good', icon: '▲', text: bestOpenCity }, 'verdict city-best') : null,
+    buildElement('p', { className: 'section-hint', text: (openCount > 0
       ? `${openCount} can be fought now. Open cities first, then the biggest. From the war feed.`
-      : 'None can be fought right now. Biggest first. From the war feed.' }),
+      : 'None can be fought right now. Biggest first. From the war feed.')
+      + (hasBonus && !CITY_BONUS_CHECKED_IN_GAME
+        ? ' A city\'s liberation bonus is estimated from its health against the planet\'s; the game shows the real one.' : '') }),
     buildElement('ul', { className: 'city-grid' }, cities.map(buildCityCard)),
   ];
 }
@@ -7718,9 +7756,11 @@ function buildCityStrip(planet) {
   if (cities.length === 0) return null;
   const chips = cities.slice(0, CITY_STRIP_LIMIT).map(city => buildElement('li', { className: `chip city-chip city-${city.state}` }, [
     buildCitySkyline(city.sizeKey),
-    buildElement('span', { text: city.state === 'open'
+    buildElement('span', { text: (city.state === 'open'
       ? `${city.name} · open${city.liberatedPercent > 0 ? ` ${formatPercent(city.liberatedPercent, 0)}` : ''}`
-      : city.state === 'locked' ? `${city.name} · locked` : city.name }),
+      : city.state === 'locked' ? `${city.name} · locked` : city.name)
+      + (isFiniteNumber(city.liberationBonusPercent) && city.state !== 'liberated'
+        ? ` · ${CITY_BONUS_CHECKED_IN_GAME ? '' : '~'}+${formatPercent(city.liberationBonusPercent, 0)}` : '') }),
   ]));
   if (cities.length > CITY_STRIP_LIMIT) chips.push(buildElement('li', { className: 'chip chip-more', text: `+${cities.length - CITY_STRIP_LIMIT} more` }));
   return buildElement('ul', { className: 'chip-list city-strip', attributes: { 'aria-label': `Cities on ${planet.name}` } }, chips);
