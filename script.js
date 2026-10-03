@@ -1071,10 +1071,13 @@ function convertSharedHistory(rawHistory) {
   const frontColumns = FRONT_ORDER.map(factionKey => ({
     factionKey, position: frontFields.findIndex(field => normalizeFactionName(String(field)) === factionKey),
   })).filter(column => column.position > 0);
+  const allPlayersPosition = frontFields.indexOf('allPlayers');
   const frontSamples = asArray(rawHistory.fronts)
     .filter(sample => Array.isArray(sample) && isFiniteNumber(sample[0]))
     .map(sample => ({
       timestamp: sample[0] * 1000,
+      // every Helldiver online, in battle or not (null when the reading didn't have it)
+      allPlayers: allPlayersPosition > 0 && isFiniteNumber(sample[allPlayersPosition]) ? sample[allPlayersPosition] : null,
       playersByFaction: Object.fromEntries(frontColumns
         .filter(column => isFiniteNumber(sample[column.position]))
         .map(column => [column.factionKey, sample[column.position]])),
@@ -3276,9 +3279,13 @@ function rankDropTargets(nowTimestamp = Date.now()) {
     .map(item => item.entry);
 }
 
-// The cards Where to drop shows: the best few, the chosen front's first.
+// The cards Where to drop shows: the best few, the Major Order's planets first, then the chosen
+// front's (the owner, 3 Oct 2026: the order matters more than anyone's own front).
 function listSimpleDropTargets(nowTimestamp = Date.now()) {
-  return orderByMyFront(rankDropTargets(nowTimestamp)).slice(0, SIMPLE_MODE_DROP_TARGET_COUNT);
+  const ranked = rankDropTargets(nowTimestamp);
+  const majorOrderEntries = ranked.filter(entry => entry.isMajorOrderPlanet);
+  return [...majorOrderEntries, ...orderByMyFront(ranked.filter(entry => !entry.isMajorOrderPlanet))]
+    .slice(0, SIMPLE_MODE_DROP_TARGET_COUNT);
 }
 
 // Players, campaigns and defenses per enemy faction, biggest front first.
@@ -3924,7 +3931,7 @@ function listPageParts() {
     isShown: () => viewMode === 'advanced' && !collapsedSectionIds.has(sectionId) });
   return [
     { id: 'simple-view', isShown: () => viewMode === 'simple', renderers: [
-      renderSinceLastVisit, renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
+      renderOrderForEveryone, renderSinceLastVisit, renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
       renderSimpleDropTargets, renderSimpleLatestDispatch] },
     advancedSection('advanced-section-war-map', [renderWarMap]),
     advancedSection('advanced-section-gambits', [renderGambits]),
@@ -4162,7 +4169,8 @@ function renderSimpleDropTargets() {
   const frontNote = document.getElementById('drop-targets-front-note');
   if (frontNote) {
     frontNote.hidden = myFront === 'all';
-    frontNote.textContent = myFront === 'all' ? '' : `Your front, the ${getFactionDisplayName(myFront)}, comes first (change it in Settings).`;
+    frontNote.textContent = myFront === 'all' ? ''
+      : `Your front, the ${getFactionDisplayName(myFront)}, comes first after the Major Order's planets (change it in Settings).`;
   }
   if (ranked.length === 0) {
     replaceContent('simple-drop-targets', [buildElement('p', {
@@ -4485,7 +4493,7 @@ function renderAssignmentsInFull() {
     return;
   }
   if (apiData.assignments.length === 0) {
-    replaceContent('output-assignments', [buildElement('p', { className: 'empty-state', text: 'No orders active.' })]);
+    replaceContent('output-assignments', [buildElement('p', { className: 'empty-state', text: 'No orders active.' }), buildPastCampaigns()]);
     return;
   }
   replaceContent('output-assignments', [buildMajorOrderFixesNote(), buildGalacticCampaignsNote(), ...apiData.assignments.map(assignment => {
@@ -4515,7 +4523,41 @@ function renderAssignmentsInFull() {
       rows.length ? buildTable(`Tasks for ${assignment.title || 'this order'}`,
         ['#', 'Task', 'Type', 'Raw values', 'Progress', 'Done'], rows) : null,
     ]);
-  })]);
+  }), buildPastCampaigns()]);
+}
+
+// The campaigns in galactic-campaigns.js that no current order belongs to, the newest (last in the
+// file) first, so the file's old entries show somewhere.
+function listPastCampaigns() {
+  const current = new Set(asArray(apiData.assignments).map(findCampaignForOrder).filter(Boolean).map(place => place.campaign.name));
+  return getGalacticCampaigns().campaigns.filter(campaign => !current.has(campaign.name)).reverse();
+}
+
+// A past campaign's result in words, from the results typed in (never guessed).
+function describePastCampaignResult(campaign) {
+  const wins = campaign.orders.filter(order => order.result === 'won').length;
+  const losses = campaign.orders.filter(order => order.result === 'lost').length;
+  const needed = countCampaignWinsNeeded(campaign);
+  if (wins >= needed) return `Reward won: ${wins} of ${campaign.orderCount} orders won`;
+  if (campaign.orderCount - losses < needed) return `Reward lost: ${wins} of ${campaign.orderCount} orders won`;
+  return `Not every result is typed in: ${wins} won and ${losses} lost of ${campaign.orderCount}`;
+}
+
+// "Past Galactic Campaigns" for advanced mode's orders, or null when the file has none.
+function buildPastCampaigns() {
+  const past = listPastCampaigns();
+  if (past.length === 0) return null;
+  const resultWords = { won: 'won', lost: 'lost' };
+  return buildElement('section', { className: 'past-campaigns' }, [
+    buildElement('h3', { text: 'Past Galactic Campaigns' }),
+    buildElement('p', { className: 'section-hint', text: 'From galactic-campaigns.js, typed in by hand from the game.' }),
+    ...past.map(campaign => buildElement('article', { className: 'order-detail past-campaign' }, [
+      buildElement('h4', { text: campaign.name }),
+      buildElement('p', { text: [describePastCampaignResult(campaign), campaign.reward ? `reward: ${campaign.reward}` : null].filter(Boolean).join(' · ') }),
+      buildElement('ol', { className: 'past-campaign-orders' }, campaign.orders.map(order =>
+        buildElement('li', { text: `${order.name}: ${resultWords[order.result] || 'result not typed in'}` }))),
+    ])),
+  ]);
 }
 
 // A warning when galactic-campaigns.js couldn't be read (a mistake in it), so the owner notices;
@@ -9330,6 +9372,427 @@ function restoreLastKnownGoodSnapshot(nowTimestamp = Date.now()) {
   return true;
 }
 
+// ── ONE ORDER FOR EVERYONE ───────────────────────────────────────────────────
+// "Drop here now": one planet at the top of simple mode that every visitor sees the same, so the
+// blob goes one way (the owner's aim, 2 Oct 2026). To be the same for everyone it is worked out
+// only from DropIntel's shared war record (history.json), never this browser's own samples, and
+// the Major Order from the war feeds. To hold still it is replayed: the page steps through the
+// record's 15-minute readings from a fixed mark, carrying the pick from one reading to the next,
+// so every visitor with the same record arrives at the same pick. A pick changes only when its
+// fight is won or lost, stops moving, or another is clearly better (ORDER_PICK_MARGIN).
+
+const ORDER_PICK_REPLAY_HOURS = 24;          // readings replayed to reach the current pick…
+const ORDER_PICK_ANCHOR_HOURS = 6;           // …from a 6-hour mark (UTC), so the start doesn't slide every reading
+const ORDER_PICK_MARGIN = 0.25;              // a fight must be 25% better (fewer Helldivers missing, or a shorter ETA)
+const ORDER_PICK_SAVABLE_SHARE = 0.3;        // a defense can be saved if it lacks at most 30% of the Helldivers online…
+const ORDER_PICK_HOPELESS_SHARE = 0.6;       // …and a picked one is let go only past 60%, so it doesn't flicker at the line
+const ORDER_PICK_SAFE_SHARE = 0.5;           // a defense on track that needs no more than half its Helldivers is safe: the pick moves on
+const ORDER_PICK_TIER = { majorOrderDefense: 0, defense: 1, majorOrderLiberation: 2, liberation: 3 };
+const PUBLIC_PAGE_ADDRESS = 'https://mrhamster112.github.io/DropIntel/';
+
+let orderPickCache = { key: null, decision: null };
+
+// The times of the record's readings, oldest first: one row of fronts per reading, else the
+// planets' own samples.
+function listRecordReadingTimestamps(record) {
+  const times = record.frontSamples.length > 0
+    ? record.frontSamples.map(sample => sample.timestamp)
+    : Object.values(record.planetsByIndex).flatMap(planetRecord => planetRecord.segments.flatMap(segment =>
+      segment.samples.map(sample => sample.timestamp)));
+  const sorted = [...new Set(times)].sort((first, second) => first - second);
+  return sorted.filter((time, position) => position === 0 || time - sorted[position - 1] > WAR_RECORD_SAME_READING_MILLISECONDS);
+}
+
+// Every fight the record read at `readingTimestamp`: the planet as it was then, and its samples up
+// to then (for its pace).
+function listRecordBattlesAt(record, readingTimestamp) {
+  const battles = [];
+  for (const [planetIndex, planetRecord] of Object.entries(record.planetsByIndex)) {
+    for (const segment of planetRecord.segments) {
+      const sample = segment.samples.find(entry => Math.abs(entry.timestamp - readingTimestamp) <= WAR_RECORD_SAME_READING_MILLISECONDS);
+      if (!sample) continue;
+      const campaign = buildCampaignFromRecordSample(Number(planetIndex), planetRecord, segment, sample);
+      battles.push({ planet: campaign.planet, kind: segment.kind,
+        samples: segment.samples.filter(entry => entry.timestamp <= sample.timestamp) });
+      break;
+    }
+  }
+  return battles;
+}
+
+// The Helldivers online at a reading: the crowd a pick can move. Every player online, not only those
+// in battles: when a big fight ends, its players are still there to go somewhere else (on 3 Oct 2026
+// GATRIA's 40,000 left the battle count at once). Falls back to the players in battles.
+function countHelldiversOnlineAt(record, readingTimestamp, battles) {
+  const front = record.frontSamples.find(sample => Math.abs(sample.timestamp - readingTimestamp) <= WAR_RECORD_SAME_READING_MILLISECONDS);
+  if (front && front.allPlayers > 0) return front.allPlayers;
+  const fromFronts = front ? Object.values(front.playersByFaction).reduce((sum, count) => sum + count, 0) : 0;
+  return fromFronts || battles.reduce((sum, battle) => sum + (battle.planet.statistics?.playerCount || 0), 0);
+}
+
+// How each fight at one reading stands as a pick: { planetIndex, kind, tier, value, eligible,
+// stillOn, measured }. eligible: it can be picked (a defense that needs help and can be saved, or
+// a liberation being won within two weeks); value: what makes one better within a tier (lower is
+// better: the Helldivers a defense lacks, the hours a liberation needs). stillOn: a pick on it holds
+// (still fought and moving: a defense on track because the blob came keeps the blob, until it is
+// safe without half of them; on 3 Oct 2026 a pick held GATRIA, on track with five times the pace it
+// needed, for a day while WASAT fell behind).
+function evaluateOrderPickBattles(battles, majorOrderPlanetIndexes, helldiversOnline, readingTimestamp) {
+  return battles.map(({ planet, kind, samples }) => {
+    const trend = calculatePlanetTrend(samples);
+    const isMajorOrderPlanet = majorOrderPlanetIndexes.has(planet.index);
+    const entry = { planetIndex: planet.index, kind, tier: null, value: null, eligible: false, stillOn: false,
+      measured: trend.status === 'measured', isMajorOrderPlanet };
+    if (kind === 'defense') {
+      const outlook = describeDefenseOutlook(planet, trend, readingTimestamp);
+      entry.tier = isMajorOrderPlanet ? ORDER_PICK_TIER.majorOrderDefense : ORDER_PICK_TIER.defense;
+      if (outlook.verdict === 'on-track') {
+        const stillNeedsTheCrowd = outlook.playersNeededToWinInTime !== null
+          && outlook.playersNeededToWinInTime > ORDER_PICK_SAFE_SHARE * (planet.statistics?.playerCount || 0);
+        return { ...entry, value: 0, stillOn: stillNeedsTheCrowd };
+      }
+      if (outlook.verdict !== 'at-risk' && outlook.verdict !== 'losing') return entry;
+      const missing = outlook.playersNeededToWinInTime !== null
+        ? Math.max(0, outlook.playersNeededToWinInTime - (planet.statistics?.playerCount || 0)) : null;
+      const savable = missing !== null && missing <= ORDER_PICK_SAVABLE_SHARE * helldiversOnline;
+      const notHopeless = missing !== null && missing <= ORDER_PICK_HOPELESS_SHARE * helldiversOnline;
+      return { ...entry, value: missing, eligible: savable, stillOn: notHopeless };
+    }
+    const outlook = describeLiberationOutlook(planet, trend);
+    entry.tier = isMajorOrderPlanet ? ORDER_PICK_TIER.majorOrderLiberation : ORDER_PICK_TIER.liberation;
+    const winningInTime = outlook.verdict === 'winning' && outlook.hoursToLiberation <= ETA_LONGEST_HOURS;
+    return { ...entry, value: winningInTime ? outlook.hoursToLiberation : null, eligible: winningInTime, stillOn: winningInTime };
+  });
+}
+
+// True when fight `first` beats `second` by the margin: a higher tier, or a value at least
+// ORDER_PICK_MARGIN better in the same tier.
+function orderPickIsClearlyBetter(first, second) {
+  if (first.tier !== second.tier) return first.tier < second.tier;
+  return first.value < second.value * (1 - ORDER_PICK_MARGIN);
+}
+
+// One reading's step: keeps the pick while its fight is still on and nothing is clearly better,
+// else chooses afresh, or says the best two are too close to call.
+function stepOrderPick(state, evaluated, readingTimestamp) {
+  const eligible = evaluated.filter(entry => entry.eligible)
+    .sort((first, second) => (first.tier - second.tier) || (first.value - second.value) || (first.planetIndex - second.planetIndex));
+  if (state.pick) {
+    const current = evaluated.find(entry => entry.planetIndex === state.pick.planetIndex && entry.kind === state.pick.kind);
+    if (current && current.stillOn) {
+      const challenger = eligible.find(entry => entry.planetIndex !== current.planetIndex);
+      if (!challenger || !orderPickIsClearlyBetter(challenger, { tier: state.pick.tier, value: current.value ?? 0 })) {
+        return { status: 'pick', pick: state.pick, closeCall: null };
+      }
+      return { status: 'pick', pick: { ...pickFrom(challenger), sinceTimestamp: readingTimestamp }, closeCall: null };
+    }
+  }
+  if (eligible.length === 0) {
+    return { status: evaluated.some(entry => !entry.measured) ? 'measuring' : 'none', pick: null, closeCall: null };
+  }
+  if (eligible[1] && !orderPickIsClearlyBetter(eligible[0], eligible[1])) {
+    return { status: 'close', pick: null, closeCall: [pickFrom(eligible[0]), pickFrom(eligible[1])] };
+  }
+  return { status: 'pick', pick: { ...pickFrom(eligible[0]), sinceTimestamp: readingTimestamp }, closeCall: null };
+}
+
+// The parts of an evaluated fight a pick keeps.
+function pickFrom(entry) {
+  return { planetIndex: entry.planetIndex, kind: entry.kind, tier: entry.tier, isMajorOrderPlanet: entry.isMajorOrderPlanet };
+}
+
+// The current orders' target planets, each from the moment the record first saw its order (before
+// that the planet wasn't the order's): [{ planetIndexes, fromTimestamp }].
+function listMajorOrderPlanetsOverTime(record, assignments = apiData.assignments) {
+  return asArray(assignments).map(assignment => {
+    const firstSample = record.majorOrderSamples.find(sample => String(sample.assignmentId) === String(assignment.id));
+    return { planetIndexes: getMajorOrderTargets([assignment]).planetIndexes, fromTimestamp: firstSample ? firstSample.timestamp : -Infinity };
+  });
+}
+
+// Replays the record and says what to drop on now. Returns { status: 'pick' | 'close' | 'measuring' |
+// 'none' | 'ended' | 'unavailable', pick, closeCall, readingTimestamp }. With live war feeds, a pick
+// whose fight they no longer list has ended ('ended') until the record's next reading.
+function decideOrderForEveryone(record = apiData.sharedHistory, assignments = apiData.assignments,
+                                liveBattleIndexes = apiData.currentDataSource ? apiData.indexesOfPlanetsWithActiveBattles : null) {
+  const readings = record ? listRecordReadingTimestamps(record) : [];
+  if (readings.length === 0) return { status: 'unavailable', pick: null, closeCall: null, readingTimestamp: null };
+  const newestReading = readings[readings.length - 1];
+  const anchorMilliseconds = ORDER_PICK_ANCHOR_HOURS * 3600000;
+  const replayFrom = Math.floor((newestReading - ORDER_PICK_REPLAY_HOURS * 3600000) / anchorMilliseconds) * anchorMilliseconds;
+  const ordersOverTime = listMajorOrderPlanetsOverTime(record, assignments);
+  // a reading without any planet numbers (a brief backup reading only adds fronts and orders) is skipped
+  const replayed = readings.filter(time => time >= replayFrom)
+    .map(readingTimestamp => ({ readingTimestamp, battles: listRecordBattlesAt(record, readingTimestamp) }))
+    .filter(reading => reading.battles.length > 0);
+  let state = { status: 'none', pick: null, closeCall: null };
+  for (const { readingTimestamp, battles } of replayed) {
+    const majorOrderPlanetIndexes = new Set(ordersOverTime.filter(order => order.fromTimestamp <= readingTimestamp)
+      .flatMap(order => [...order.planetIndexes]));
+    state = stepOrderPick(state, evaluateOrderPickBattles(battles, majorOrderPlanetIndexes,
+      countHelldiversOnlineAt(record, readingTimestamp, battles), readingTimestamp), readingTimestamp);
+  }
+  if (state.pick && liveBattleIndexes && !liveBattleIndexes.has(state.pick.planetIndex)) {
+    state = { status: 'ended', pick: state.pick, closeCall: null };
+  }
+  return { ...state, readingTimestamp: replayed.length > 0 ? replayed[replayed.length - 1].readingTimestamp : newestReading,
+    replayStartTimestamp: replayed.length > 0 ? replayed[0].readingTimestamp : null };
+}
+
+// The decision for the page as it is, worked out once per record, order and set of live fights.
+function getOrderForEveryone() {
+  const record = apiData.sharedHistory;
+  const live = apiData.currentDataSource ? [...apiData.indexesOfPlanetsWithActiveBattles].sort().join(',') : 'none';
+  const key = [record?.updatedAtTimestamp ?? 'none', asArray(apiData.assignments).map(order => order.id).join(','),
+    [...getMajorOrderTargets().planetIndexes].sort().join(','), live].join('|');
+  if (orderPickCache.key !== key) orderPickCache = { key, decision: decideOrderForEveryone() };
+  return orderPickCache.decision;
+}
+
+// A planet as the page shows it now: from the live feeds, else from the record's newest reading.
+function findPlanetForOrder(planetIndex) {
+  const live = apiData.planetsByIndex[planetIndex];
+  if (live) return live;
+  const record = apiData.sharedHistory;
+  const planetRecord = record?.planetsByIndex[planetIndex];
+  if (!planetRecord) return null;
+  const segment = planetRecord.segments[planetRecord.segments.length - 1];
+  return buildCampaignFromRecordSample(Number(planetIndex), planetRecord, segment, segment.samples[segment.samples.length - 1]).planet;
+}
+
+// The pick's one line of why, from numbers the page has: "Major Order: 27.8% defended, 1d 7h left,
+// behind pace: about 6,700 more Helldivers would hold it in time (estimate)."
+function describeOrderReason(pick, planet, nowTimestamp = Date.now()) {
+  const prefix = pick.isMajorOrderPlanet ? 'Major Order: ' : '';
+  const trend = getPlanetTrend(planet);
+  if (pick.kind === 'defense' && planetIsUnderAttack(planet)) {
+    const outlook = describeDefenseOutlook(planet, trend, nowTimestamp);
+    const where = `${formatPercent(outlook.progressPercent)} defended`
+      + (outlook.hoursLeft !== null ? `, ${formatDuration(outlook.hoursLeft * 3600)} left` : '');
+    if (outlook.verdict === 'on-track') return `${prefix}${where}, on track now: stay until it is held.`;
+    const missing = outlook.playersNeededToWinInTime !== null
+      ? outlook.playersNeededToWinInTime - (planet.statistics?.playerCount || 0) : null;
+    return `${prefix}${where}, behind pace` + (missing > 0
+      ? `: about ${formatExactNumber(roundHelldiversUp(missing))} more Helldivers would hold it in time (estimate).` : '.');
+  }
+  const outlook = describeLiberationOutlook(planet, trend);
+  const where = `${formatPercent(getLiberationPercent(planet))} liberated`;
+  const lead = pick.isMajorOrderPlanet ? prefix : 'The liberation closest to being won: ';
+  return outlook.verdict === 'winning' && outlook.hoursToLiberation <= ETA_LONGEST_HOURS
+    ? `${lead}${where}, about ${formatDuration(outlook.hoursToLiberation * 3600)} to go at this pace (estimate).`
+    : `${lead}${where}.`;
+}
+
+// The order as a short message to paste in Discord: the pick, its line, and its link.
+function describeOrderForDiscord(pick, planet, nowTimestamp = Date.now()) {
+  return [`Drop here now: ${planet.name}`, describeOrderReason(pick, planet, nowTimestamp),
+    `${PUBLIC_PAGE_ADDRESS}#planet=${planet.index}`].join('\n');
+}
+
+// The text of the order's picture, line by line (drawOrderPicture draws them).
+function describeOrderPictureLines(pick, planet, nowTimestamp = Date.now()) {
+  return {
+    kicker: 'DROP HERE NOW',
+    planetName: planet.name,
+    reason: describeOrderReason(pick, planet, nowTimestamp),
+    link: `${PUBLIC_PAGE_ADDRESS.replace(/^https:\/\//, '')}#planet=${planet.index}`,
+    footer: 'DropIntel · a fan-made war tracker · the same pick for everyone',
+  };
+}
+
+// "Drop here now" → #order-for-everyone-body
+function renderOrderForEveryone(nowTimestamp = Date.now()) {
+  const body = document.getElementById('order-for-everyone-body');
+  if (!body) return;
+  if (apiData.sharedHistoryStatus === 'loading' && !apiData.sharedHistory) {
+    replaceContent('order-for-everyone-body', [buildElement('p', { className: 'empty-state is-waiting', text: 'Working out the pick from the war record…' })]);
+    return;
+  }
+  const decision = getOrderForEveryone();
+  const recordAge = apiData.sharedHistory ? formatTimeAgo(apiData.sharedHistory.updatedAtTimestamp, nowTimestamp) : null;
+  const footnote = buildElement('p', { className: 'section-hint',
+    text: `The same pick for everyone, worked out from DropIntel's war record (updated ${recordAge}). It holds until the fight `
+      + 'is won or lost, stops moving, or another is clearly better, so everyone stays together.' });
+  const say = (status, icon, text) => [buildStatusLine({ status, icon, text }, 'order-status'), recordAge ? footnote : null];
+
+  if (decision.status === 'unavailable') {
+    replaceContent('order-for-everyone-body', say('neutral', '…',
+      'The pick is worked out from DropIntel\'s shared war record, which couldn\'t be loaded. Where to drop below still works.'));
+    return;
+  }
+  if (decision.status === 'measuring') {
+    replaceContent('order-for-everyone-body', say('neutral', '…',
+      'No pick yet: the war record needs a few more readings to measure the fights (one every 15 minutes).'));
+    return;
+  }
+  if (decision.status === 'none') {
+    replaceContent('order-for-everyone-body', say('neutral', '•',
+      'No pick right now: no defense that can still be saved needs help, and no liberation will be won within two weeks at its pace.'));
+    return;
+  }
+  if (decision.status === 'close') {
+    const [first, second] = decision.closeCall.map(entry => findPlanetForOrder(entry.planetIndex));
+    replaceContent('order-for-everyone-body', [
+      buildElement('p', { className: 'order-close-call' }, [
+        'No single pick right now: ', buildPlanetDrawerButton(first), ' and ', buildPlanetDrawerButton(second),
+        ' are too close to call. Either helps; pick one and stay.']),
+      recordAge ? footnote : null]);
+    return;
+  }
+  const planet = findPlanetForOrder(decision.pick.planetIndex);
+  if (decision.status === 'ended' || !planet) {
+    replaceContent('order-for-everyone-body', say('neutral', '✔',
+      `${planet ? planet.name : 'The picked planet'}'s fight just ended. A new pick comes with the war record's next reading (every 15 minutes).`));
+    return;
+  }
+  const status = buildElement('span', { className: 'order-share-status', attributes: { 'aria-live': 'polite' } });
+  replaceContent('order-for-everyone-body', [
+    buildElement('p', { className: `order-pick faction-${getEnemyFactionOnPlanet(planet) || 'unknown'}` }, [
+      buildPlanetDrawerButton(planet, planet.name, 'link-button order-pick-planet'),
+      decision.pick.isMajorOrderPlanet ? buildElement('span', { className: 'reason reason-major-order', text: 'Major Order' }) : null,
+    ]),
+    buildElement('p', { className: 'order-reason', text: describeOrderReason(decision.pick, planet, nowTimestamp) }),
+    buildElement('p', { className: 'order-actions' }, [
+      buildElement('button', { className: 'order-action', text: 'Copy for Discord', attributes: { type: 'button', 'data-order-copy': planet.index } }),
+      buildElement('button', { className: 'order-action', text: 'Share as a picture', attributes: { type: 'button', 'data-order-picture': planet.index } }),
+      status,
+    ]),
+    buildElement('p', { className: 'section-hint',
+      // a pick made at the first reading the page looks at may well be older
+      text: `Picked ${decision.pick.sinceTimestamp === decision.replayStartTimestamp ? 'more than ' : ''}`
+        + `${formatTimeAgo(decision.pick.sinceTimestamp, nowTimestamp)}. The same pick for everyone, worked out from DropIntel's war `
+        + `record (updated ${recordAge}). It holds until the fight is won or lost, stops moving, or another is clearly better, so everyone stays together.` }),
+  ]);
+}
+
+// Clicks on the order's buttons: copy the message, or make the picture.
+function handleOrderClicks(event) {
+  const button = event.target?.closest?.('[data-order-copy], [data-order-picture]');
+  if (!button) return;
+  const decision = getOrderForEveryone();
+  const planet = decision.pick ? findPlanetForOrder(decision.pick.planetIndex) : null;
+  if (!planet) return;
+  if (button.hasAttribute('data-order-copy')) copyOrderForDiscord(button, decision.pick, planet);
+  else shareOrderAsPicture(button, decision.pick, planet);
+}
+
+// Shows a short message next to the order's buttons.
+function sayOrderShareStatus(button, text) {
+  const status = button.parentElement?.querySelector('.order-share-status');
+  if (status) status.textContent = text;
+}
+
+// "Copy for Discord": copies the message, or puts the planet's link in the address bar where the
+// browser won't allow copying (an old browser, or a page opened from disk).
+function copyOrderForDiscord(button, pick, planet) {
+  const showInAddressBar = () => {
+    history.replaceState(null, '', `#planet=${planet.index}`);
+    sayOrderShareStatus(button, 'Copying isn\'t allowed here; the link is in the address bar.');
+  };
+  if (window.navigator.clipboard && typeof window.navigator.clipboard.writeText === 'function') {
+    return window.navigator.clipboard.writeText(describeOrderForDiscord(pick, planet))
+      .then(() => sayOrderShareStatus(button, 'Copied: paste it in Discord.'), showInAddressBar);
+  }
+  showInAddressBar();
+  return Promise.resolve();
+}
+
+// A colour from style.css's tokens, for drawing on a canvas.
+function readColourToken(name, fallback) {
+  return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+// Breaks text into lines no wider than maxWidth on a canvas.
+function wrapCanvasText(context, text, maxWidth) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    const tried = line ? `${line} ${word}` : word;
+    if (line && context.measureText(tried).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = tried;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Draws the order's picture (1200 × 630, the size link previews use) with our own drawn globe,
+// never the game's art. Only paths and text, so a copy opened from disk can still save it.
+function drawOrderPicture(canvas, lines) {
+  canvas.width = 1200;
+  canvas.height = 630;
+  const context = canvas.getContext('2d');
+  if (!context) return false;
+  const font = readColourToken('--font-body', 'sans-serif');
+  context.fillStyle = readColourToken('--surface-panel', 'black');
+  context.fillRect(0, 0, 1200, 630);
+  context.fillStyle = readColourToken('--accent', 'gold');
+  context.fillRect(0, 0, 1200, 12);
+
+  // the drawn globe: a disc with two parallels and a meridian
+  const globe = readColourToken('--faction-humans', 'royalblue');
+  context.strokeStyle = globe;
+  context.lineWidth = 6;
+  context.beginPath(); context.arc(1040, 150, 80, 0, Math.PI * 2); context.stroke();
+  context.beginPath(); context.ellipse(1040, 150, 32, 80, 0, 0, Math.PI * 2); context.stroke();
+  context.beginPath(); context.moveTo(960, 150); context.lineTo(1120, 150); context.stroke();
+  for (const offset of [-45, 45]) {
+    context.beginPath(); context.moveTo(974, 150 + offset); context.lineTo(1106, 150 + offset); context.stroke();
+  }
+
+  context.textBaseline = 'top';
+  context.fillStyle = readColourToken('--accent', 'gold');
+  context.font = `bold 40px ${font}`;
+  context.fillText(lines.kicker, 72, 72);
+  context.fillStyle = readColourToken('--text-primary', 'white');
+  context.font = `bold 104px ${font}`;
+  context.fillText(lines.planetName, 72, 128, 860);
+  context.fillStyle = readColourToken('--text-secondary', 'lightgray');
+  context.font = `36px ${font}`;
+  wrapCanvasText(context, lines.reason, 1056).slice(0, 4).forEach((line, position) => context.fillText(line, 72, 276 + position * 50));
+  context.fillStyle = readColourToken('--accent', 'gold');
+  context.font = `bold 34px ${font}`;
+  context.fillText(lines.link, 72, 500);
+  context.fillStyle = readColourToken('--text-muted', 'gray');
+  context.font = `26px ${font}`;
+  context.fillText(lines.footer, 72, 556);
+  return true;
+}
+
+// "Share as a picture": draws the order and copies it as an image where the browser allows,
+// else saves it as a PNG file.
+function shareOrderAsPicture(button, pick, planet) {
+  const canvas = document.createElement('canvas');
+  if (!drawOrderPicture(canvas, describeOrderPictureLines(pick, planet))) {
+    sayOrderShareStatus(button, 'This browser can\'t draw the picture.');
+    return Promise.resolve();
+  }
+  const fileName = `dropintel-${planet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.png`;
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/png')).then(blob => {
+    if (!blob) {
+      sayOrderShareStatus(button, 'This browser can\'t draw the picture.');
+      return undefined;
+    }
+    const save = () => {
+      const link = document.createElement('a');
+      link.href = window.URL.createObjectURL(blob);
+      link.download = fileName;
+      link.click();
+      setTimeout(() => window.URL.revokeObjectURL(link.href), 10000);
+      sayOrderShareStatus(button, `Picture saved as ${fileName}.`);
+    };
+    if (window.navigator.clipboard && typeof window.navigator.clipboard.write === 'function' && typeof window.ClipboardItem === 'function') {
+      return window.navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })])
+        .then(() => sayOrderShareStatus(button, 'Picture copied: paste it in Discord.'), save);
+    }
+    save();
+    return undefined;
+  });
+}
+
 // ── THE WAR RECORD WHEN BOTH APIS ARE DOWN ───────────────────────────────────
 // With no fresh data and no saved snapshot, the page builds what it can from the shared war
 // record (history.json, another host): the battles of its newest reading with their progress
@@ -9354,6 +9817,11 @@ function buildCampaignFromWarRecord(planetIndex, planetRecord, newestReadingTime
   const segment = planetRecord.segments[planetRecord.segments.length - 1];
   const sample = segment?.samples[segment.samples.length - 1];
   if (!sample || newestReadingTimestamp - sample.timestamp > WAR_RECORD_SAME_READING_MILLISECONDS) return null;
+  return buildCampaignFromRecordSample(planetIndex, planetRecord, segment, sample);
+}
+
+// One reading of a fight in the record as a campaign in the primary API's shape.
+function buildCampaignFromRecordSample(planetIndex, planetRecord, segment, sample) {
   const isDefense = segment.kind === 'defense';
   const percent = isDefense ? sample.defensePercent : sample.liberationPercent;
   const health = segment.maxHealth * (1 - percent / 100);
@@ -9533,6 +10001,7 @@ function startApp() {
   if (guideView) guideView.addEventListener('click', handleGuideLinkClick);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   document.addEventListener('click', handleDrawerClicks);
+  document.addEventListener('click', handleOrderClicks);
   document.addEventListener('keydown', handleDrawerKeydown);
   wireDrawerSwipe();
 

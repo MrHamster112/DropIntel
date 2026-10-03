@@ -103,7 +103,7 @@
           <option value="illuminate">Illuminate</option>
         </select>
       </label>
-      <p class="section-hint">"My front" puts that front's planets first in Where to drop. Settings stay in this browser only.</p>
+      <p class="section-hint">"My front" puts that front's planets first in Where to drop, after the Major Order's. Settings stay in this browser only.</p>
       <fieldset class="alert-settings">
         <legend>Alerts</legend>
         <label class="alert-master"><input type="checkbox" id="alerts-enabled" aria-describedby="alerts-phone-note"> Alert me while this page is open (off by default)</label>
@@ -164,6 +164,11 @@
 <main id="main-content" tabindex="-1">
 
   <div id="simple-view" class="view simple-view" data-view="simple">
+    <section id="order-for-everyone" class="panel order-for-everyone" aria-labelledby="order-heading">
+      <h2 id="order-heading">Drop here now</h2>
+      <div id="order-for-everyone-body"></div>
+    </section>
+
     <section id="since-last-visit" class="panel since-last-visit" aria-labelledby="since-last-visit-heading" hidden>
       <h2 id="since-last-visit-heading">Since your last visit</h2>
       <div id="since-last-visit-body"></div>

@@ -1139,5 +1139,20 @@ input[type="search"] {
 
 /* ── SINCE YOUR LAST VISIT ─────────────────────────────────────────────────── */
 .since-last-visit { border-left: 4px solid var(--accent); }
+
+/* Drop here now: the one order everyone sees, so it leads the page */
+.order-for-everyone { border: 2px solid var(--accent); }
+.order-for-everyone h2 { margin-bottom: 4px; }
+.order-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 8px; }
+.order-pick .order-pick-planet { font-size: 2rem; font-weight: 700; letter-spacing: 0.02em; }
+.order-reason { font-size: 1.05rem; margin: 0 0 12px; }
+.order-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 8px; }
+.order-action {
+  min-height: 44px; padding: 8px 14px; border-radius: var(--radius); cursor: pointer;
+  background: var(--surface-raised); color: var(--text-primary); border: 1px solid var(--border-strong); font: inherit;
+}
+.order-action:hover { border-color: var(--accent); }
+.order-share-status { color: var(--text-secondary); }
+.order-close-call { font-size: 1.05rem; }
 .since-last-visit-orders { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
 .since-last-visit-actions { margin: 8px 0 0; }
