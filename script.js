@@ -76,7 +76,10 @@ const UNNAMED_ENEMY_NOTE_SEE_BRIEFING = '(exact enemy not identified; see the fu
 const TASK_LOCATION_TYPE = { NONE: 0, PLANET: 1, SECTOR: 2 };
 
 // Only the task types documented in README.md; anything else is described generically.
-const TASK_TYPE = { ERADICATE: 3, COMPLETE_OPERATIONS: 9, LIBERATE_PLANET: 11, HOLD_PLANET: 13 };
+// 12 (defend a planet against N attacks) was confirmed on 3 Oct 2026: the owner copied the
+// game's words for "Patriotic Invigoration" ("Defend GATRIA against 1 attacks from the
+// Terminids"), and its count is the target amount (value type 3).
+const TASK_TYPE = { ERADICATE: 3, COMPLETE_OPERATIONS: 9, LIBERATE_PLANET: 11, DEFEND_PLANET: 12, HOLD_PLANET: 13 };
 
 const DSS_ACTION_STATUS_NAME = { 1: 'CHARGING', 2: 'ACTIVE', 3: 'COOLDOWN' };
 
@@ -3053,9 +3056,7 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
 function describeAssignmentTask(task, progressValue) {
   const fixes = getMajorOrderFixes();
   const description = describeAssignmentTaskAutomatically(task, progressValue);
-  // a fix copied from the card with the unnamed-enemy note still matches
-  const fix = fixes.taskText.find(entry =>
-    entry.pageSays.replace(UNNAMED_ENEMY_NOTE_SEE_BRIEFING, '').replace(UNNAMED_ENEMY_NOTE, '').trim() === description.sentence);
+  const fix = fixes.taskText.find(entry => fixMatchesSentence(entry, description.sentence));
   if (fix) {
     description.automaticSentence = description.sentence;
     description.sentence = fix.showInstead.trim();
@@ -3066,6 +3067,41 @@ function describeAssignmentTask(task, progressValue) {
     ? fixes.enemyNameByUnitId[String(getTaskValue(task, TASK_VALUE_TYPE.UNIT_ID))] : undefined;
   if (!enemyName) return description;
   return { ...describeAssignmentTaskAutomatically(task, progressValue, { enemyName }), enemyNamedByOwner: true };
+}
+
+// True when a fix's pageSays is this sentence. Typed on a phone, it can differ in capitals,
+// spaces, quote marks or a full stop, and a copy can carry the unnamed-enemy note.
+function fixMatchesSentence(fix, sentence) {
+  return simplifyTaskText(fix.pageSays.replace(UNNAMED_ENEMY_NOTE_SEE_BRIEFING, '').replace(UNNAMED_ENEMY_NOTE, ''))
+    === simplifyTaskText(sentence);
+}
+
+// A task sentence reduced for comparing: lower case, single spaces, plain quotes, no final stop.
+function simplifyTaskText(text) {
+  return String(text).toLowerCase().replace(/[\u2018\u2019]/g, '\'').replace(/[\u201c\u201d]/g, '"')
+    .replace(/\s+/g, ' ').trim().replace(/\.$/, '').trim();
+}
+
+// A defend task ("Defend GATRIA against 1 attack from the Terminids"): its count of attacks
+// held, and while the planet is under attack, how far the current defense has got, so a
+// one-attack task's bar is that defense's bar.
+function describeDefendTask(description, planet, planetName, targetAmount, progress, factionText) {
+  const attackCount = isFiniteNumber(targetAmount) && targetAmount > 0 ? targetAmount : null;
+  description.sentence = `Defend ${planetName || 'the target planet'}`
+    + (attackCount ? ` against ${formatExactNumber(attackCount)} attack${attackCount === 1 ? '' : 's'}` : '')
+    + (factionText ? ` from the ${factionText}` : '');
+  if (!attackCount) {
+    description.progressText = `${formatExactNumber(progress)} defended`;
+    return description;
+  }
+  description.isComplete = progress >= attackCount;
+  const currentDefensePercent = !description.isComplete && planet && planetIsUnderAttack(planet)
+    ? getDefenseProgressPercent(planet.event) : null;
+  description.progressPercent = description.isComplete ? 100
+    : Math.min(100, (progress + (currentDefensePercent ?? 0) / 100) / attackCount * 100);
+  description.progressText = `${formatExactNumber(Math.min(progress, attackCount))} of ${formatExactNumber(attackCount)} defended`
+    + (currentDefensePercent !== null ? ` · this defense ${formatPercent(currentDefensePercent)} done` : '');
+  return description;
 }
 
 // The page's own wording of one task, from the game's numbers. It names the
@@ -3114,6 +3150,7 @@ function describeAssignmentTaskAutomatically(task, progressValue, { enemyName = 
 
   const factionKey = normalizeFactionName(factionName);
   const factionText = factionKey ? getFactionDisplayName(factionKey) : null;
+  if (task.type === TASK_TYPE.DEFEND_PLANET) return describeDefendTask(description, planet, planetName, targetAmount, progress, factionText);
   if (task.type === TASK_TYPE.ERADICATE) {
     description.sentence = `Kill ${formatBigNumber(targetAmount)} ${enemyName || factionText || 'enemies'}${placeText}`;
   } else if (task.type === TASK_TYPE.COMPLETE_OPERATIONS) {
@@ -4435,11 +4472,26 @@ function buildMajorOrderFixesNote() {
   }
   const fixCount = fixes.taskText.length;
   const nameCount = Object.keys(fixes.enemyNameByUnitId).length;
-  return buildElement('p', { className: 'section-hint',
-    text: 'The page words each task by itself and names the faction, not the exact enemy, so it can be wrong. '
-      + 'Fix the wording, or name an enemy by its id, in major-order-fixes.js in the public DropIntel repository; that file says how.'
-      + (fixCount ? ` ${fixCount} fix${fixCount === 1 ? ' is' : 'es are'} in the file.` : '')
-      + (nameCount ? ` ${nameCount} enemy name${nameCount === 1 ? ' is' : 's are'} in the file.` : '') });
+  const unusedFixes = findUnusedTaskTextFixes(fixes);
+  return buildElement('div', {}, [
+    buildElement('p', { className: 'section-hint',
+      text: 'The page words each task by itself and names the faction, not the exact enemy, so it can be wrong. '
+        + 'Fix the wording, or name an enemy by its id, in major-order-fixes.js in the public DropIntel repository; that file says how.'
+        + (fixCount ? ` ${fixCount} fix${fixCount === 1 ? ' is' : 'es are'} in the file.` : '')
+        + (nameCount ? ` ${nameCount} enemy name${nameCount === 1 ? ' is' : 's are'} in the file.` : '') }),
+    // so a fix that doesn't take shows why: its pageSays isn't what the page says
+    unusedFixes.length === 0 ? null : buildElement('p', { className: 'section-hint major-order-fixes-unused',
+      text: `Not used, because no task below reads like this (fine for an order that is over): `
+        + unusedFixes.map(fix => `"${fix.pageSays.trim()}"`).join(', ')
+        + '. To fix a task, copy its words from the table below, before "(fixed by hand".' }),
+  ]);
+}
+
+// The wording fixes that match no task of the current orders.
+function findUnusedTaskTextFixes(fixes = getMajorOrderFixes()) {
+  const sentences = asArray(apiData.assignments).flatMap(assignment => asArray(assignment.tasks)
+    .map((task, position) => describeAssignmentTaskAutomatically(task, asArray(assignment.progress)[position]).sentence));
+  return fixes.taskText.filter(fix => !sentences.some(sentence => fixMatchesSentence(fix, sentence)));
 }
 
 // Every campaign as a full card, filtered and sorted by the section controls → #output-campaigns
@@ -4891,8 +4943,10 @@ function buildFrontPlayerSeries() {
 }
 
 // True for tasks measured against a target amount (kill N, complete N
-// operations). Liberate/hold tasks follow a planet instead.
+// operations). Liberate, hold and defend tasks follow a planet instead: a defend task's
+// count of attacks only moves when a defense ends.
 function taskHasTargetAmount(task) {
+  if (task.type === TASK_TYPE.DEFEND_PLANET) return false;
   const targetAmount = getTaskValue(task, TASK_VALUE_TYPE.TARGET_AMOUNT);
   return isFiniteNumber(targetAmount) && targetAmount > 0;
 }
@@ -5243,7 +5297,7 @@ function renderTrendGraphs() {
       const taskSeries = buildMajorOrderTaskSeries(majorOrder, taskPosition);
       if (!taskSeries.chartable) {
         blocks.push(buildElement('p', { className: 'section-hint',
-          text: `${taskSeries.sentence}: follows a planet, so see that planet's liberation graph below.` }));
+          text: `${taskSeries.sentence}: follows a planet, so see that planet's graph below.` }));
         return;
       }
       if (taskSeries.isComplete) {
@@ -6704,8 +6758,8 @@ function formatShortDateTime(timestamp, nowTimestamp = Date.now()) {
 function describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp = Date.now()) {
   const task = assignment.tasks[taskPosition];
   const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
-  const deadlineTimestamp = Date.parse(assignment.expiration || '');
-  const hasDeadline = !isNaN(deadlineTimestamp);
+  let deadlineTimestamp = Date.parse(assignment.expiration || '');
+  let hasDeadline = !isNaN(deadlineTimestamp);
   const pace = {
     status: 'not-enough-data',
     ratePercentPerHour: null,
@@ -6732,10 +6786,20 @@ function describeMajorOrderTaskPace(assignment, taskPosition, nowTimestamp = Dat
     if (planetIsUnderAttack(planet)) {
       const trend = getPlanetTrend(planet);
       const defense = describeDefenseOutlook(planet, trend, nowTimestamp);
+      // a defense lost at its own deadline loses the task, even if the order runs on
+      const defenseEndTimestamp = Date.parse(planet.event.endTime || '');
+      if (!isNaN(defenseEndTimestamp) && (!hasDeadline || defenseEndTimestamp < deadlineTimestamp)) {
+        deadlineTimestamp = defenseEndTimestamp;
+        hasDeadline = true;
+        pace.hoursLeft = Math.max(0, (deadlineTimestamp - nowTimestamp) / 3600000);
+      }
       progressPercent = defense.progressPercent;
       pace.ratePercentPerHour = defense.ratePercentPerHour;
       pace.paceMinutes = trend.spanMinutes || 0;
       if (defense.hoursToWin !== null) pace.projectedFinishTimestamp = nowTimestamp + defense.hoursToWin * 3600000;
+    } else if (task.type === TASK_TYPE.DEFEND_PLANET) {
+      // no attack under way: nothing to measure until the next one starts
+      return pace;
     } else if (normalizeFactionName(planet.currentOwner) === null) {
       // ours and not under attack: a hold task is on pace as long as that lasts
       return { ...pace, status: 'on-pace', planetIsHeld: true };
