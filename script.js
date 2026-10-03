@@ -203,6 +203,9 @@ function normalizeRegion(region) {
     maxHealth: isFiniteNumber(region.maxHealth) && region.maxHealth > 0 ? region.maxHealth : null,
     regenPerSecond: isFiniteNumber(region.regenPerSecond) ? region.regenPerSecond : null,
     isAvailable: region.isAvailable === true,
+    availabilityFactor: isFiniteNumber(region.availabilityFactor) ? region.availabilityFactor : null,
+    // the v1 feed doesn't say who holds a city; should it start to, the page uses it
+    owner: typeof region.owner === 'string' ? region.owner : (FACTION_NAME_BY_ID[region.owner] || null),
     players: isFiniteNumber(region.players) ? region.players : 0,
   };
 }
@@ -256,6 +259,7 @@ const apiData = {
   currentWarTimeSeconds: 0,   // game clock at warTimeCapturedAtTimestamp
   warTimeCapturedAtTimestamp: null, // Date.now() when currentWarTimeSeconds was read
   planetHistoryByIndex: loadPlanetHistory(Date.now()), // samples for trend maths
+  cityHistoryByKey: {},       // the page's own city readings (memory only), for each city's pace
   majorOrderHistory: loadMajorOrderHistory(Date.now()), // [{timestamp, assignmentId, progress[]}]
   sharedHistory: null,        // the collector's history.json, converted; in memory only (SHARED WAR HISTORY)
   sharedHistoryStatus: 'loading', // 'loading' | 'loaded' | 'unavailable'
@@ -943,6 +947,7 @@ function overlayFreshBattleDataOntoPlanetList() {
 function processFreshBattleData(nowTimestamp = Date.now()) {
   overlayFreshBattleDataOntoPlanetList();
   recordPlanetHistorySamples(nowTimestamp);
+  recordCityHistorySamples(nowTimestamp);
   recordMajorOrderHistory(nowTimestamp);
   rememberKnownBiomes();
 }
@@ -1021,6 +1026,41 @@ function recordPlanetHistorySamples(nowTimestamp) {
 
   apiData.planetHistoryByIndex = nextHistory;
   writeStoredValue(PLANET_HISTORY_STORAGE_KEY, JSON.stringify(nextHistory));
+}
+
+// The key a city's readings are kept under: "planet-city".
+function getCityKey(planetIndex, region) {
+  return `${planetIndex}-${region.id ?? region.name}`;
+}
+
+// One reading of every city fought for on a battle planet (memory only, 45 minutes like the
+// planets'), so a city's pace can be measured; the shared record adds older readings.
+function recordCityHistorySamples(nowTimestamp) {
+  const previous = apiData.cityHistoryByKey || {};
+  const next = {};
+  for (const planetIndex of apiData.indexesOfPlanetsWithActiveBattles) {
+    const planet = apiData.planetsByIndex[planetIndex];
+    for (const region of asArray(planet?.regions)) {
+      if (region.health === null || !region.maxHealth) continue;
+      const key = getCityKey(planetIndex, region);
+      const sample = { timestamp: nowTimestamp, liberationPercent: Math.max(0, Math.min(100, (1 - region.health / region.maxHealth) * 100)),
+        defensePercent: null, maxHealth: region.maxHealth, playerCount: region.players };
+      let samples = asArray(previous[key]).filter(entry => nowTimestamp - entry.timestamp <= PLANET_HISTORY_MAX_AGE_MILLISECONDS);
+      const last = samples[samples.length - 1];
+      if (last && last.maxHealth !== sample.maxHealth) samples = [];
+      else if (last && nowTimestamp - last.timestamp < SAMPLE_MERGE_WINDOW_MILLISECONDS) samples = samples.slice(0, -1);
+      next[key] = [...samples, sample];
+    }
+  }
+  apiData.cityHistoryByKey = next;
+}
+
+// A city's readings for its current fight, the shared record's first, oldest first.
+function getCitySamples(planetIndex, region) {
+  const key = getCityKey(planetIndex, region);
+  const shared = apiData.sharedHistory?.citiesByKey?.[key];
+  const own = asArray(apiData.cityHistoryByKey?.[key]).filter(sample => sample.maxHealth === region.maxHealth);
+  return mergeSampleLists(shared && shared.maxHealth === region.maxHealth ? shared.samples : [], own);
 }
 
 // ── SHARED WAR HISTORY ───────────────────────────────────────────────────────
@@ -1105,6 +1145,26 @@ function convertSharedHistory(rawHistory) {
     }))
     .sort((first, second) => first.timestamp - second.timestamp);
 
+  // cities: "planet-city" → { planetIndex, id, maxHealth, samples } (collectors since 3 Oct 2026)
+  const cityFields = asArray(rawHistory.fields?.city);
+  const cityColumn = name => cityFields.indexOf(name);
+  const citiesByKey = {};
+  for (const [key, rawCity] of Object.entries(isPlainObject(rawHistory.cities) ? rawHistory.cities : {})) {
+    const maxHealth = isFiniteNumber(rawCity?.maxHealth) && rawCity.maxHealth > 0 ? rawCity.maxHealth : null;
+    if (maxHealth === null || cityColumn('health') < 0) continue;
+    const samples = asArray(rawCity.samples)
+      .filter(sample => Array.isArray(sample) && isFiniteNumber(sample[0]) && isFiniteNumber(sample[cityColumn('health')]))
+      .map(sample => ({
+        timestamp: sample[0] * 1000,
+        liberationPercent: Math.max(0, Math.min(100, (1 - sample[cityColumn('health')] / maxHealth) * 100)),
+        defensePercent: null,   // the trend maths measures liberationPercent when this is null
+        maxHealth,
+        playerCount: isFiniteNumber(sample[cityColumn('players')]) ? sample[cityColumn('players')] : null,
+      }))
+      .sort((first, second) => first.timestamp - second.timestamp);
+    if (samples.length > 0) citiesByKey[key] = { planetIndex: rawCity.planet, id: rawCity.id, maxHealth, samples };
+  }
+
   const majorOrderSamples = [];
   const ordersById = {};
   for (const [assignmentId, rawOrder] of Object.entries(isPlainObject(rawHistory.orders) ? rawHistory.orders : {})) {
@@ -1130,6 +1190,7 @@ function convertSharedHistory(rawHistory) {
     updatedAtTimestamp: rawHistory.updatedAt * 1000,
     startedAtTimestamp: firstTimestamps.length > 0 ? Math.min(...firstTimestamps) : null,
     planetsByIndex,
+    citiesByKey,
     frontSamples,
     majorOrderSamples,
     ordersById,
@@ -7605,79 +7666,110 @@ function buildPlanetWarHistory(planetIndex) {
 
 // ── CITIES ON A PLANET ───────────────────────────────────────────────────────
 // The game's cities: the war feed lists them per planet as "regions", each with a name, a size
-// (Settlement, Town, City, MegaCity), its own health, Helldivers and whether it can be fought now
-// (isAvailable). The owner asked for them on 3 Oct 2026, after DiversHub's "Planet regions". Only
-// the main source has them; the backup's planets come without. The page says what the feed says
-// (liberated %, open or locked, Helldivers) and draws each size as a small skyline of its own.
+// (Settlement, Town, City, MegaCity), its own health, regen, Helldivers and whether it can be fought
+// now (isAvailable). The owner asked for them on 3 Oct 2026, laid out like DiversHub's "Planet
+// regions": each city's own fight (liberated %, the enemy's recovery, the Helldivers' push, the
+// pace per hour and when it would be done) and what securing it adds to the planet's fight. A city
+// has its own owner: on 3 Oct 2026 WASAT, ours and under attack, had DRYWELL in Automaton hands
+// being liberated. The v1 feed has no owner field, so a city with a health is in enemy hands and a
+// city without one is held by its planet's owner. Only the main source has cities.
 
 const CITY_SIZE_ORDER = ['MegaCity', 'City', 'Town', 'Settlement'];
 const CITY_SIZE_WORDS = { MegaCity: 'Mega-city', City: 'City', Town: 'Town', Settlement: 'Settlement' };
 const CITY_STRIP_LIMIT = 4;   // cities named on a planet's card; the drawer has them all
-// Liberating a city adds a liberation bonus to its planet (the owner, 3 Oct 2026). The feed has no
-// bonus field, so the page estimates it as the city's health against the planet's: a city with a
-// quarter of the planet's health adds about 25%. Set this to true once one city's bonus in the game
-// matches the page's number; the page then stops calling it an estimate.
+// Securing a city adds a bonus to its planet's fight (the owner, 3 Oct 2026). The feed has no bonus
+// field. On 3 Oct 2026 DiversHub's "securing bonus" was, for all 39 cities fought for on 17 planets,
+// exactly 1.5 × the city's health ÷ the health of its planet's fight (the defense event's on a planet
+// under attack): DRYWELL 600,000 × 1.5 ÷ 1,750,000 = 51.43%. Where the 1.5 comes from isn't in the
+// feed. Set CITY_BONUS_CHECKED_IN_GAME to true once one city's bonus in the game matches; the page
+// then stops calling it an estimate.
+const CITY_SECURING_BONUS_MULTIPLIER = 1.5;
 const CITY_BONUS_CHECKED_IN_GAME = false;
 
-// One city in words: { name, sizeKey, sizeWord, state: 'held' | 'liberated' | 'open' | 'locked',
-// stateText, liberatedPercent, players, recoveryPercentPerHour, liberationBonusPercent (what
-// liberating it adds to the planet, estimated; null on a planet of ours), description }.
+// What securing a city adds to its planet's fight, in %: 1.5 × the city's health against the
+// fight's (the defense event's on a planet under attack, else the planet's), see
+// CITY_SECURING_BONUS_MULTIPLIER. Null without the numbers.
+function estimateCityLiberationBonus(region, planet) {
+  const fightMaxHealth = planetIsUnderAttack(planet) ? planet.event.maxHealth : planet.maxHealth;
+  if (!region.maxHealth || !(fightMaxHealth > 0)) return null;
+  return CITY_SECURING_BONUS_MULTIPLIER * region.maxHealth / fightMaxHealth * 100;
+}
+
+// "about +24% to the planet's defense (estimate)", or without the hedge once checked in the game.
+function describeCityBonus(percent, fightWord = 'liberation') {
+  return CITY_BONUS_CHECKED_IN_GAME
+    ? `+${formatPercent(percent, 2)} to the planet's ${fightWord}`
+    : `about +${formatPercent(percent, 2)} to the planet's ${fightWord} (estimate)`;
+}
+
+// One city in words: { key, name, sizeKey, sizeWord, state: 'held' | 'liberated' | 'open' |
+// 'locked', stateText, liberatedPercent, players, recoveryPercentPerHour, netPercentPerHour,
+// pushPercentPerHour, paceMinutes, hoursToSecure, liberationBonusPercent, fightWord, description }.
+// The pace comes from the city's readings, the shared record's and the page's (getCitySamples).
 function describeCity(region, planet) {
-  const liberatedPercent = region.health !== null && region.maxHealth
+  const planetIsOurs = normalizeFactionName(planet.currentOwner) === null;
+  // on an enemy planet every city is the enemy's until secured; on ours, a city with a health is
+  // one the enemy holds (WASAT's DRYWELL), one without is ours
+  const inEnemyHands = region.owner ? normalizeFactionName(region.owner) !== null : (!planetIsOurs || region.health !== null);
+  const liberatedPercent = inEnemyHands && region.health !== null && region.maxHealth
     ? Math.max(0, Math.min(100, (1 - region.health / region.maxHealth) * 100)) : null;
-  const heldBySuperEarth = normalizeFactionName(planet.currentOwner) === null;
-  const state = heldBySuperEarth ? 'held'
+  const state = !inEnemyHands ? (planetIsOurs ? 'held' : 'liberated')
     : liberatedPercent !== null && liberatedPercent >= 100 ? 'liberated'
     : region.isAvailable ? 'open' : 'locked';
-  const progress = liberatedPercent !== null && liberatedPercent > 0 && state !== 'liberated' ? `, ${formatPercent(liberatedPercent)} liberated` : '';
-  const stateText = {
-    held: 'Held by Super Earth',
-    liberated: 'Liberated',
-    open: `Open: can be fought now${progress}`,
-    locked: `Locked: can't be fought yet${progress}`,
-  }[state];
+  const recoveryPercentPerHour = inEnemyHands && region.regenPerSecond !== null && region.maxHealth
+    ? region.regenPerSecond * 3600 / region.maxHealth * 100 : null;
+  const trend = state === 'open' || state === 'locked' ? calculatePlanetTrend(getCitySamples(planet.index, region)) : { status: 'gathering' };
+  const netPercentPerHour = trend.status === 'measured' ? trend.percentPerHour : null;
+  const hoursToSecure = netPercentPerHour > 0 && liberatedPercent !== null ? sanitizeHours((100 - liberatedPercent) / netPercentPerHour) : null;
   return {
+    key: getCityKey(planet.index, region),
     name: region.name,
     sizeKey: CITY_SIZE_ORDER.includes(region.size) ? region.size : 'Town',
     sizeWord: CITY_SIZE_WORDS[region.size] || region.size || 'City',
     state,
-    stateText,
-    liberatedPercent: state === 'held' ? null : liberatedPercent,
+    stateText: { held: 'Held by Super Earth', liberated: 'Secured', open: 'Open: being fought for',
+      locked: `Locked${isFiniteNumber(region.availabilityFactor) ? ` · ${formatPercent((1 - region.availabilityFactor) * 100, 2)}` : ''}` }[state],
+    // 1 − availabilityFactor, as DiversHub shows a locked city ("Locked - 60.00%"); what it counts
+    // towards isn't documented (an open city can have some, a locked one none), so it is only shown
+    lockPercent: isFiniteNumber(region.availabilityFactor) ? (1 - region.availabilityFactor) * 100 : null,
+    liberatedPercent,
     players: region.players,
-    recoveryPercentPerHour: region.regenPerSecond !== null && region.maxHealth ? region.regenPerSecond * 3600 / region.maxHealth * 100 : null,
-    liberationBonusPercent: estimateCityLiberationBonus(region, planet),
+    recoveryPercentPerHour,
+    netPercentPerHour,
+    // the Helldivers' own push: the net pace plus what the enemy wins back
+    pushPercentPerHour: isFiniteNumber(netPercentPerHour) && isFiniteNumber(recoveryPercentPerHour) ? netPercentPerHour + recoveryPercentPerHour : null,
+    paceMinutes: trend.spanMinutes || 0,
+    hoursToSecure,
+    liberationBonusPercent: state === 'held' ? null : estimateCityLiberationBonus(region, planet),
+    fightWord: planetIsUnderAttack(planet) ? 'defense' : 'liberation',
     description: stripGameMarkup(region.description || '').trim(),
   };
 }
 
-// What liberating a city adds to its planet's liberation, in %: the city's health against the
-// planet's (see CITY_BONUS_CHECKED_IN_GAME). Null on a planet of ours, or without the numbers.
-function estimateCityLiberationBonus(region, planet) {
-  if (normalizeFactionName(planet.currentOwner) === null || !region.maxHealth || !(planet.maxHealth > 0)) return null;
-  return region.maxHealth / planet.maxHealth * 100;
+// When a city would be secured at its pace, in words: "about 7h 3m", or why there is no answer.
+function describeCityPrediction(city) {
+  if (city.state === 'liberated') return 'Secured';
+  if (!isFiniteNumber(city.netPercentPerHour)) return 'Measuring the pace…';
+  if (city.netPercentPerHour <= 0) return 'Not being won at this pace';
+  return city.hoursToSecure > ETA_LONGEST_HOURS ? 'More than two weeks' : `About ${formatDuration(city.hoursToSecure * 3600)}`;
 }
 
-// "about +24% to the planet's liberation (estimate)", or without the hedge once checked in the game.
-function describeCityBonus(percent) {
-  return CITY_BONUS_CHECKED_IN_GAME
-    ? `+${formatPercent(percent, 0)} to the planet's liberation`
-    : `about +${formatPercent(percent, 0)} to the planet's liberation (estimate)`;
-}
-
-// The open city worth most to its planet, in one sentence, or null: "Liberating STARPASS would
-// add about +24% to ZEA RUGOSIA's liberation (estimate)", and whether that would finish the planet.
+// The open city worth most to its planet, in one sentence, or null: "Securing DRYWELL (66.8%,
+// about 7h 3m to go) would add about +51.4% to WASAT's defense (estimate)".
 function describeBestOpenCity(planet, cities = listPlanetCities(planet)) {
   const best = cities.filter(city => city.state === 'open' && isFiniteNumber(city.liberationBonusPercent))
     .sort((first, second) => second.liberationBonusPercent - first.liberationBonusPercent)[0];
   if (!best) return null;
-  const estimate = CITY_BONUS_CHECKED_IN_GAME ? '' : ' (estimate)';
-  const left = hasKnownHealth(planet) ? 100 - getLiberationPercent(planet) : null;
-  return `Liberating ${best.name} would add ${CITY_BONUS_CHECKED_IN_GAME ? '' : 'about '}+${formatPercent(best.liberationBonusPercent, 0)}`
-    + ` to ${planet.name}'s liberation${estimate}`
-    + (left !== null && best.liberationBonusPercent >= left ? ': enough to finish it.' : '.');
+  const where = [best.liberatedPercent > 0 ? formatPercent(best.liberatedPercent) : null,
+    isFiniteNumber(best.hoursToSecure) && best.hoursToSecure <= ETA_LONGEST_HOURS ? `about ${formatDuration(best.hoursToSecure * 3600)} to go` : null]
+    .filter(Boolean).join(', ');
+  const progress = planetIsUnderAttack(planet) ? getDefenseProgressPercent(planet.event) : hasKnownHealth(planet) ? getLiberationPercent(planet) : null;
+  return `Securing ${best.name}${where ? ` (${where})` : ''} would add ${CITY_BONUS_CHECKED_IN_GAME ? '' : 'about '}`
+    + `+${formatPercent(best.liberationBonusPercent, 2)} to ${planet.name}'s ${best.fightWord}${CITY_BONUS_CHECKED_IN_GAME ? '' : ' (estimate)'}`
+    + (progress !== null && best.liberationBonusPercent >= 100 - progress ? ': enough to finish it.' : '.');
 }
 
-// A planet's cities, the ones that can be fought first, then the biggest.
+// A planet's cities, the ones being fought for first, then the biggest.
 function listPlanetCities(planet) {
   const stateOrder = { open: 0, locked: 1, liberated: 2, held: 3 };
   return asArray(planet.regions).map(region => describeCity(region, planet))
@@ -7705,28 +7797,42 @@ function buildCitySkyline(sizeKey) {
     'aria-hidden': 'true', focusable: 'false', 'data-size': sizeKey }, shapes);
 }
 
-// One city as a card for the drawer: skyline, name, size and state, a bar while it is fought for,
-// its Helldivers and recovery, and the game's own description of it.
-function buildCityCard(city) {
+// One city as a card for the drawer, laid out like DiversHub's: its size and whether it can be
+// fought; skyline, name and what securing it adds; its bar; liberated %, pace and when it would be
+// done; then the enemy's recovery, the Helldivers' push and how many fight there.
+function buildCityCard(city, planet) {
   const statusName = { held: 'good', liberated: 'good', open: 'warning', locked: 'neutral' }[city.state];
+  // a city fought for now, or a locked one part liberated, shows its fight; others only what they are
+  const showsFight = city.state === 'open' || (city.state === 'locked' && city.liberatedPercent > 0);
   return buildElement('li', { className: `city-card city-${city.state}` }, [
+    buildElement('div', { className: 'city-card-top' }, [
+      buildElement('span', { className: 'city-size', text: city.sizeWord }),
+      buildElement('span', { className: `city-state status-${statusName}`, text: city.stateText }),
+    ]),
     buildElement('div', { className: 'city-card-head' }, [
       buildCitySkyline(city.sizeKey),
-      buildElement('div', {}, [
+      buildElement('div', { className: 'city-card-name' }, [
         buildElement('p', { className: 'city-name', text: city.name }),
-        buildElement('p', { className: 'city-size', text: city.sizeWord }),
+        buildElement('p', { className: 'city-planet', text: planet.name }),
       ]),
+      isFiniteNumber(city.liberationBonusPercent) ? buildElement('div', { className: 'city-bonus',
+        attributes: { title: describeCityBonus(city.liberationBonusPercent, city.fightWord) } }, [
+        buildElement('p', { className: 'city-bonus-value', text: `${CITY_BONUS_CHECKED_IN_GAME ? '' : '~'}+${formatPercent(city.liberationBonusPercent, 2)}` }),
+        buildElement('p', { className: 'city-bonus-label', text: CITY_BONUS_CHECKED_IN_GAME ? 'Securing bonus' : 'Securing bonus (estimate)' }),
+      ]) : null,
     ]),
-    buildElement('p', { className: `city-state status-${statusName}`, text: city.stateText }),
-    // a bar only says something for a city fought for now or part liberated
-    city.liberatedPercent !== null && (city.state === 'open' || (city.state === 'locked' && city.liberatedPercent > 0))
-      ? buildMeter(city.liberatedPercent, 'Liberated', statusName) : null,
-    buildFactList([
-      ['Helldivers here', city.players > 0 || city.state === 'open' ? formatBigNumber(city.players) : null],
-      ['Enemy recovers', city.state === 'open' && isFiniteNumber(city.recoveryPercentPerHour) ? formatEnemyRecovery(city.recoveryPercentPerHour) : null],
-      ['Liberation bonus', isFiniteNumber(city.liberationBonusPercent)
-        ? `${describeCityBonus(city.liberationBonusPercent)}${city.state === 'liberated' ? ', already gained' : ''}` : null],
-    ]),
+    showsFight ? buildMeter(city.liberatedPercent, 'Liberated', statusName) : null,
+    showsFight ? buildFactList([
+      ['Liberated', isFiniteNumber(city.liberatedPercent) ? formatPercent(city.liberatedPercent, 2) : null],
+      ['Liberation rate', city.state === 'open' || isFiniteNumber(city.netPercentPerHour)
+        ? (isFiniteNumber(city.netPercentPerHour) ? formatPercentPerHour(city.netPercentPerHour) : 'measuring…') : null],
+      ['Prediction', city.state === 'open' ? describeCityPrediction(city) : null],
+    ], 'fact-list city-fight') : null,
+    showsFight ? buildFactList([
+      ['Enemy recovers', isFiniteNumber(city.recoveryPercentPerHour) ? formatEnemyRecovery(city.recoveryPercentPerHour) : null],
+      ['Helldivers push', isFiniteNumber(city.pushPercentPerHour) ? formatPercentPerHour(city.pushPercentPerHour) : null],
+      ['Helldivers here', formatExactNumber(city.players)],
+    ], 'fact-list city-forces') : null,
     city.description ? buildElement('details', { className: 'city-about', attributes: { 'data-drawer-keep-open': `city-${city.name}` } }, [
       buildElement('summary', { text: 'About this city' }),
       buildElement('p', { text: city.description }),
@@ -7745,16 +7851,16 @@ function buildPlanetCities(planet) {
     buildElement('h3', { text: `Cities (${cities.length})` }),
     bestOpenCity ? buildStatusLine({ status: 'good', icon: '▲', text: bestOpenCity }, 'verdict city-best') : null,
     buildElement('p', { className: 'section-hint', text: (openCount > 0
-      ? `${openCount} can be fought now. Open cities first, then the biggest. From the war feed.`
-      : 'None can be fought right now. Biggest first. From the war feed.')
+      ? `${openCount} can be fought for now. Those first, then the biggest. From the war feed; paces from its readings.`
+      : 'None can be fought for right now. Biggest first. From the war feed.')
       + (hasBonus && !CITY_BONUS_CHECKED_IN_GAME
-        ? ' A city\'s liberation bonus is estimated from its health against the planet\'s; the game shows the real one.' : '') }),
-    buildElement('ul', { className: 'city-grid' }, cities.map(buildCityCard)),
+        ? ' A city\'s securing bonus is worked out from its health against the planet\'s fight, as DiversHub does; the game shows the real one.' : '') }),
+    buildElement('ul', { className: 'city-grid' }, cities.map(city => buildCityCard(city, planet))),
   ];
 }
 
 // The planet card's short list of cities: a small skyline and name each, with how far an open one
-// is liberated; null for a planet without any.
+// is liberated and what securing it adds; null for a planet without any.
 function buildCityStrip(planet) {
   const cities = listPlanetCities(planet);
   if (cities.length === 0) return null;

@@ -1165,14 +1165,25 @@ input[type="search"] {
 .city-open .city-skyline { color: var(--status-warning); }
 .city-liberated .city-skyline { color: var(--status-good); }
 .city-grid { list-style: none; margin: 8px 0 12px; padding: 0; display: grid; gap: 8px;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .city-card { background: var(--surface-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; }
 .city-card.city-open { border-color: var(--status-warning); }
+.city-card-top { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 0 0 8px;
+  font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.city-size { color: var(--text-muted); }
+.city-state { color: var(--text-secondary); text-align: right; }
+.city-state.status-warning { color: var(--status-warning); }
+.city-state.status-good { color: var(--status-good); }
 .city-card-head { display: flex; align-items: center; gap: 10px; }
-.city-name { margin: 0; font-weight: 700; letter-spacing: 0.02em; }
-.city-size { margin: 0; color: var(--text-muted); font-size: 0.85rem; }
-.city-state { margin: 6px 0; font-size: 0.9rem; }
+.city-card-name { flex: 1; min-width: 0; }
+.city-name { margin: 0; font-weight: 700; letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.city-planet { margin: 0; color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; }
+.city-bonus { text-align: right; flex: none; }
+.city-bonus-value { margin: 0; font-weight: 700; font-size: 1.1rem; color: var(--accent); }
+.city-bonus-label { margin: 0; color: var(--text-muted); font-size: 0.75rem; }
+.city-card .meter { margin-top: 8px; }
 .city-card .fact-list { margin: 6px 0 0; }
+.city-card .city-forces { padding-top: 6px; border-top: 1px solid var(--border); }
 .city-about summary { cursor: pointer; color: var(--text-secondary); font-size: 0.9rem; }
 .city-about p { margin: 6px 0 0; color: var(--text-secondary); font-size: 0.9rem; }
 .city-strip { margin-top: 8px; }
