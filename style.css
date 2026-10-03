@@ -1156,3 +1156,23 @@ input[type="search"] {
 .order-close-call { font-size: 1.05rem; }
 .since-last-visit-orders { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
 .since-last-visit-actions { margin: 8px 0 0; }
+
+/* Cities on a planet (the war feed's regions): drawn skylines, never the game's art */
+.city-skyline { fill: currentColor; flex: none; color: var(--text-secondary); }
+.city-held .city-skyline { color: var(--faction-humans); }
+.city-open .city-skyline { color: var(--status-warning); }
+.city-liberated .city-skyline { color: var(--status-good); }
+.city-grid { list-style: none; margin: 8px 0 12px; padding: 0; display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.city-card { background: var(--surface-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; }
+.city-card.city-open { border-color: var(--status-warning); }
+.city-card-head { display: flex; align-items: center; gap: 10px; }
+.city-name { margin: 0; font-weight: 700; letter-spacing: 0.02em; }
+.city-size { margin: 0; color: var(--text-muted); font-size: 0.85rem; }
+.city-state { margin: 6px 0; font-size: 0.9rem; }
+.city-card .fact-list { margin: 6px 0 0; }
+.city-about summary { cursor: pointer; color: var(--text-secondary); font-size: 0.9rem; }
+.city-about p { margin: 6px 0 0; color: var(--text-secondary); font-size: 0.9rem; }
+.city-strip { margin-top: 8px; }
+.city-chip { display: inline-flex; align-items: center; gap: 6px; }
+.city-chip .city-skyline { width: 20px; height: 15px; }

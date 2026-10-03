@@ -180,9 +180,26 @@ function normalizePlanet(planet) {
     hazards:    asArray(planet.hazards).filter(isPlainObject),
     waypoints:  asArray(planet.waypoints).filter(isFiniteNumber),
     attacking:  asArray(planet.attacking).filter(isFiniteNumber),
-    regions:    asArray(planet.regions).filter(isPlainObject),
+    regions:    asArray(planet.regions).map(normalizeRegion).filter(Boolean),
     statistics: isPlainObject(planet.statistics) ? planet.statistics : {},
     event:      isPlainObject(planet.event) ? planet.event : null,
+  };
+}
+
+// Cleans one city (the war feed's "region") so the cities section can trust its shape; null if
+// it has no name. Health is null while nobody fights for it.
+function normalizeRegion(region) {
+  if (!isPlainObject(region) || typeof region.name !== 'string' || region.name.trim() === '') return null;
+  return {
+    id: isFiniteNumber(region.id) ? region.id : null,
+    name: region.name.trim(),
+    description: typeof region.description === 'string' ? region.description : '',
+    size: typeof region.size === 'string' ? region.size : '',
+    health: isFiniteNumber(region.health) ? region.health : null,
+    maxHealth: isFiniteNumber(region.maxHealth) && region.maxHealth > 0 ? region.maxHealth : null,
+    regenPerSecond: isFiniteNumber(region.regenPerSecond) ? region.regenPerSecond : null,
+    isAvailable: region.isAvailable === true,
+    players: isFiniteNumber(region.players) ? region.players : 0,
   };
 }
 
@@ -3909,6 +3926,7 @@ function buildPlanetCard(planet, { idPrefix, reasons = [], liberationOutlook = n
       buildFactList(facts),
       buildReinforcementNote(planet),
       buildConditionChips(planet),
+      buildCityStrip(planet),
       ...extraContent,
     ]),
   ]);
@@ -4317,8 +4335,8 @@ function buildPressureComparison(outlook) {
 function buildRegionTable(planet) {
   const regions = asArray(planet.regions);
   if (regions.length === 0) return null;
-  return buildTable(`Regions on ${planet.name}`,
-    ['Region', 'Size', 'Captured', 'Planet bonus', 'Recovers', 'Open', 'Helldivers'],
+  return buildTable(`Cities on ${planet.name}`,
+    ['City', 'Size', 'Captured', 'Health vs planet', 'Recovers', 'Open', 'Helldivers'],
     regions.map(region => {
       const capturePercent = isFiniteNumber(region.health) && region.maxHealth > 0
         ? Math.max(0, Math.min(100, (1 - region.health / region.maxHealth) * 100)) : null;
@@ -7582,6 +7600,132 @@ function buildPlanetWarHistory(planetIndex) {
   ].filter(Boolean);
 }
 
+// ── CITIES ON A PLANET ───────────────────────────────────────────────────────
+// The game's cities: the war feed lists them per planet as "regions", each with a name, a size
+// (Settlement, Town, City, MegaCity), its own health, Helldivers and whether it can be fought now
+// (isAvailable). The owner asked for them on 3 Oct 2026, after DiversHub's "Planet regions". Only
+// the main source has them; the backup's planets come without. The page says what the feed says
+// (liberated %, open or locked, Helldivers) and draws each size as a small skyline of its own.
+
+const CITY_SIZE_ORDER = ['MegaCity', 'City', 'Town', 'Settlement'];
+const CITY_SIZE_WORDS = { MegaCity: 'Mega-city', City: 'City', Town: 'Town', Settlement: 'Settlement' };
+const CITY_STRIP_LIMIT = 4;   // cities named on a planet's card; the drawer has them all
+
+// One city in words: { name, sizeKey, sizeWord, state: 'held' | 'liberated' | 'open' | 'locked',
+// stateText, liberatedPercent, players, recoveryPercentPerHour, planetSharePercent, description }.
+function describeCity(region, planet) {
+  const liberatedPercent = region.health !== null && region.maxHealth
+    ? Math.max(0, Math.min(100, (1 - region.health / region.maxHealth) * 100)) : null;
+  const heldBySuperEarth = normalizeFactionName(planet.currentOwner) === null;
+  const state = heldBySuperEarth ? 'held'
+    : liberatedPercent !== null && liberatedPercent >= 100 ? 'liberated'
+    : region.isAvailable ? 'open' : 'locked';
+  const progress = liberatedPercent !== null && liberatedPercent > 0 && state !== 'liberated' ? `, ${formatPercent(liberatedPercent)} liberated` : '';
+  const stateText = {
+    held: 'Held by Super Earth',
+    liberated: 'Liberated',
+    open: `Open: can be fought now${progress}`,
+    locked: `Locked: can't be fought yet${progress}`,
+  }[state];
+  return {
+    name: region.name,
+    sizeKey: CITY_SIZE_ORDER.includes(region.size) ? region.size : 'Town',
+    sizeWord: CITY_SIZE_WORDS[region.size] || region.size || 'City',
+    state,
+    stateText,
+    liberatedPercent: state === 'held' ? null : liberatedPercent,
+    players: region.players,
+    recoveryPercentPerHour: region.regenPerSecond !== null && region.maxHealth ? region.regenPerSecond * 3600 / region.maxHealth * 100 : null,
+    planetSharePercent: region.maxHealth && planet.maxHealth > 0 ? region.maxHealth / planet.maxHealth * 100 : null,
+    description: stripGameMarkup(region.description || '').trim(),
+  };
+}
+
+// A planet's cities, the ones that can be fought first, then the biggest.
+function listPlanetCities(planet) {
+  const stateOrder = { open: 0, locked: 1, liberated: 2, held: 3 };
+  return asArray(planet.regions).map(region => describeCity(region, planet))
+    .sort((first, second) => (stateOrder[first.state] - stateOrder[second.state])
+      || (CITY_SIZE_ORDER.indexOf(first.sizeKey) - CITY_SIZE_ORDER.indexOf(second.sizeKey))
+      || first.name.localeCompare(second.name));
+}
+
+// A small skyline for a city's size, drawn here (never the game's art): huts for a settlement, a
+// few roofs for a town, towers for a city, a crowd of high towers and a spire for a mega-city.
+// Decorative: the size is always said in words next to it.
+function buildCitySkyline(sizeKey) {
+  const buildings = {
+    Settlement: [[6, 22, 10, 8, true], [20, 20, 12, 10, true]],
+    Town: [[2, 20, 9, 10, true], [12, 16, 10, 14, false], [23, 18, 9, 12, true], [33, 21, 11, 9, true]],
+    City: [[2, 16, 8, 14, false], [11, 9, 9, 21, false], [21, 13, 8, 17, false], [30, 6, 8, 24, false], [39, 15, 7, 15, false]],
+    MegaCity: [[1, 12, 6, 18, false], [8, 5, 7, 25, false], [16, 0, 6, 30, false], [23, 8, 7, 22, false],
+      [31, 3, 6, 27, false], [38, 10, 5, 20, false], [44, 14, 4, 16, false]],
+  }[sizeKey] || [];
+  const shapes = buildings.map(([x, y, width, height, roof]) => (roof
+    ? createSvgElement('path', { d: `M${x} ${y + 4} L${x + width / 2} ${y} L${x + width} ${y + 4} V${y + height} H${x} Z` })
+    : createSvgElement('rect', { x, y, width, height })));
+  if (sizeKey === 'MegaCity') shapes.push(createSvgElement('rect', { x: 18.5, y: -6, width: 1, height: 6 }));
+  return createSvgElement('svg', { class: `city-skyline city-skyline-${sizeKey}`, viewBox: '0 -6 48 36', width: 48, height: 36,
+    'aria-hidden': 'true', focusable: 'false', 'data-size': sizeKey }, shapes);
+}
+
+// One city as a card for the drawer: skyline, name, size and state, a bar while it is fought for,
+// its Helldivers and recovery, and the game's own description of it.
+function buildCityCard(city) {
+  const statusName = { held: 'good', liberated: 'good', open: 'warning', locked: 'neutral' }[city.state];
+  return buildElement('li', { className: `city-card city-${city.state}` }, [
+    buildElement('div', { className: 'city-card-head' }, [
+      buildCitySkyline(city.sizeKey),
+      buildElement('div', {}, [
+        buildElement('p', { className: 'city-name', text: city.name }),
+        buildElement('p', { className: 'city-size', text: city.sizeWord }),
+      ]),
+    ]),
+    buildElement('p', { className: `city-state status-${statusName}`, text: city.stateText }),
+    // a bar only says something for a city fought for now or part liberated
+    city.liberatedPercent !== null && (city.state === 'open' || (city.state === 'locked' && city.liberatedPercent > 0))
+      ? buildMeter(city.liberatedPercent, 'Liberated', statusName) : null,
+    buildFactList([
+      ['Helldivers here', city.players > 0 || city.state === 'open' ? formatBigNumber(city.players) : null],
+      ['Enemy recovers', city.state === 'open' && isFiniteNumber(city.recoveryPercentPerHour) ? formatEnemyRecovery(city.recoveryPercentPerHour) : null],
+      ['Health vs the planet', isFiniteNumber(city.planetSharePercent) ? `${formatPercent(city.planetSharePercent, 0)} of the planet's` : null],
+    ]),
+    city.description ? buildElement('details', { className: 'city-about', attributes: { 'data-drawer-keep-open': `city-${city.name}` } }, [
+      buildElement('summary', { text: 'About this city' }),
+      buildElement('p', { text: city.description }),
+    ]) : null,
+  ]);
+}
+
+// The drawer's "Cities" part, or nothing for a planet without any.
+function buildPlanetCities(planet) {
+  const cities = listPlanetCities(planet);
+  if (cities.length === 0) return [];
+  const openCount = cities.filter(city => city.state === 'open').length;
+  return [
+    buildElement('h3', { text: `Cities (${cities.length})` }),
+    buildElement('p', { className: 'section-hint', text: openCount > 0
+      ? `${openCount} can be fought now. Open cities first, then the biggest. From the war feed.`
+      : 'None can be fought right now. Biggest first. From the war feed.' }),
+    buildElement('ul', { className: 'city-grid' }, cities.map(buildCityCard)),
+  ];
+}
+
+// The planet card's short list of cities: a small skyline and name each, with how far an open one
+// is liberated; null for a planet without any.
+function buildCityStrip(planet) {
+  const cities = listPlanetCities(planet);
+  if (cities.length === 0) return null;
+  const chips = cities.slice(0, CITY_STRIP_LIMIT).map(city => buildElement('li', { className: `chip city-chip city-${city.state}` }, [
+    buildCitySkyline(city.sizeKey),
+    buildElement('span', { text: city.state === 'open'
+      ? `${city.name} · open${city.liberatedPercent > 0 ? ` ${formatPercent(city.liberatedPercent, 0)}` : ''}`
+      : city.state === 'locked' ? `${city.name} · locked` : city.name }),
+  ]));
+  if (cities.length > CITY_STRIP_LIMIT) chips.push(buildElement('li', { className: 'chip chip-more', text: `+${cities.length - CITY_STRIP_LIMIT} more` }));
+  return buildElement('ul', { className: 'chip-list city-strip', attributes: { 'aria-label': `Cities on ${planet.name}` } }, chips);
+}
+
 // ── PLANET DRAWER ────────────────────────────────────────────────────────────
 // Everything about one planet in one panel, opened from the map, the gambit panel, the
 // simple-mode cards and Major Order tasks. It sits beside the page on a wide screen and is a
@@ -7710,6 +7854,7 @@ function buildPlanetDrawerBody(details) {
   if (disagreementNote) sections.push(disagreementNote);
   const reinforcementNote = buildReinforcementNote(planet);
   if (reinforcementNote) sections.push(reinforcementNote);
+  sections.push(...buildPlanetCities(planet));
 
   sections.push(buildElement('h3', { text: 'Modifiers' }));
   sections.push(details.modifiers.length > 0
@@ -8797,11 +8942,19 @@ function applyLocationHash(hash = window.location.hash) {
 }
 
 // Opens the drawer on the planet a link names, once the planets are in (called after renders).
+// The main source sends the battles first and every planet a few seconds later, so a planet
+// without a battle (#planet=0, Super Earth) keeps waiting until the whole list is in.
 function openPlanetFromLinkWhenKnown() {
   if (!pendingPlanetFromLink || apiData.planets.length === 0) return;
   const planet = findPlanetFromLink(pendingPlanetFromLink);
+  if (!planet && !planetListIsComplete()) return;
   pendingPlanetFromLink = null;
   if (planet) openPlanetDrawer(planet.index);
+}
+
+// True once the page knows more planets than the ones with a battle (the full list is in).
+function planetListIsComplete() {
+  return apiData.planets.length > apiData.activeCampaigns.length;
 }
 
 // Puts "#planet=N" in the address bar while the drawer shows a planet (so the link can be
@@ -9308,7 +9461,7 @@ const LAST_SNAPSHOT_STORAGE_KEY = 'hd2_last_snapshot';
 const LAST_SNAPSHOT_VERSION = 1;
 const LAST_SNAPSHOT_MAX_AGE_MILLISECONDS = 24 * 60 * 60 * 1000; // older than a day says little
 
-// A planet cut down to what the cards, trends and drawer read (no descriptions, no regions).
+// A planet cut down to what the cards, trends and drawer read (no descriptions; cities without theirs).
 function trimPlanetForSnapshot(planet) {
   return {
     index: planet.index, name: planet.name, sector: planet.sector, biome: { name: planet.biome?.name ?? null },
@@ -9317,6 +9470,7 @@ function trimPlanetForSnapshot(planet) {
     currentOwner: planet.currentOwner, disabled: planet.disabled, event: planet.event,
     statistics: { playerCount: planet.statistics?.playerCount ?? null },
     waypoints: asArray(planet.waypoints), attacking: asArray(planet.attacking), position: planet.position ?? null,
+    regions: asArray(planet.regions).map(region => ({ ...region, description: '' })),
   };
 }
 
