@@ -160,15 +160,37 @@ function readBackupPercents(backupWarStatus, backupCampaigns) {
   return percentByIndex;
 }
 
-// Each order's name in the game ("Resource Acquisition"), from the war status's global events:
-// the order's own event carries its id. The /v1 and major-orders feeds only say "MAJOR ORDER".
-function readOrderNamesFromStatus(warStatus) {
-  const names = new Map();
+// Each order's own event in the war status's global events (the event carries the order's id):
+// its name in the game ("Resource Acquisition") and the event's other fields, without the long
+// message. The /v1 and major-orders feeds only say "MAJOR ORDER".
+function readOrderEventsFromStatus(warStatus) {
+  const events = new Map();
   for (const event of Array.isArray(warStatus?.globalEvents) ? warStatus.globalEvents : []) {
     const orderId = numberOrNull(event?.assignmentId32);
-    if (orderId && typeof event.title === 'string' && event.title.trim()) names.set(orderId, event.title.trim());
+    if (!orderId || !event || typeof event !== 'object') continue;
+    const kept = { ...event };
+    delete kept.message;
+    events.set(orderId, kept);
+  }
+  return events;
+}
+
+// Each order's name in the game, from its global event.
+function readOrderNamesFromStatus(warStatus) {
+  const names = new Map();
+  for (const [orderId, event] of readOrderEventsFromStatus(warStatus)) {
+    if (typeof event.title === 'string' && event.title.trim()) names.set(orderId, event.title.trim());
   }
   return names;
+}
+
+// What the feed says an order is, kept beside its samples: its own title, briefing, tasks (type,
+// values, valueTypes), rewards, flags and any field added later, so the page and a session can tell
+// a Major Order from the smaller orders that run beside it. progress and the deadline are kept apart.
+function readOrderDefinition(order) {
+  const definition = { ...order };
+  delete definition.progress;
+  return definition;
 }
 
 // The primary API's feeds → a snapshot.
@@ -177,6 +199,7 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
   const owners = readOwnersFromBackupStatus(backupWarStatus);
   const backupPercentByIndex = readBackupPercents(backupWarStatus, backupCampaigns);
   const orderNames = readOrderNamesFromStatus(backupWarStatus);
+  const orderEvents = readOrderEventsFromStatus(backupWarStatus);
   const battles = [];
   const cities = [];
   for (const campaign of campaigns) {
@@ -223,6 +246,8 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
       expiresAt: toSeconds(order?.expiration),
       targets: readTaskTargets(order?.tasks),
       progress: (Array.isArray(order?.progress) ? order.progress : []).map(numberOrNull),
+      definition: order && typeof order === 'object' ? readOrderDefinition(order) : null,
+      gameEvent: orderEvents.get(numberOrNull(order?.id)) || null,
     })).filter((order) => order.id !== null) : null,
     dssPlanetIndex,
     dssPlanetName,
@@ -236,6 +261,7 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
   if (!Array.isArray(warStatus?.planetStatus)) throw new Error('The backup /war/status has no planets');
   const owners = readOwnersFromBackupStatus(warStatus);
   const orderNames = readOrderNamesFromStatus(warStatus);
+  const orderEvents = readOrderEventsFromStatus(warStatus);
   const statusByIndex = new Map(warStatus.planetStatus.map((status) => [status?.index, status]));
   const campaignByIndex = new Map((warStatus.campaigns || []).map((campaign) => [campaign?.planetIndex, campaign]));
   const eventByIndex = new Map((warStatus.planetEvents || []).map((event) => [event?.planetIndex, event]));
@@ -281,6 +307,8 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
       expiresAt: numberOrNull(order?.expiresIn) !== null ? takenAt + Math.round(order.expiresIn) : null,
       targets: readTaskTargets(order?.setting?.tasks),
       progress: (Array.isArray(order?.progress) ? order.progress : []).map(numberOrNull),
+      definition: order && typeof order === 'object' ? readOrderDefinition(order) : null,
+      gameEvent: orderEvents.get(numberOrNull(order?.id32)) || null,
     })).filter((order) => order.id !== null) : null,
     dssPlanetIndex: readDssFromBackupStatus(warStatus),
     dssPlanetName: null,
@@ -448,6 +476,9 @@ export function addSnapshot(history, snapshot) {
   for (const order of snapshot.orders || []) {
     const saved = history.orders[order.id] || (history.orders[order.id] = { samples: [] });
     Object.assign(saved, { title: order.title, expiresAt: order.expiresAt, targets: order.targets, season });
+    // the newest reading's copy; the two APIs send different shapes, so source says which
+    if (order.definition) Object.assign(saved, { definition: order.definition, definitionSource: snapshot.source });
+    if (order.gameEvent) saved.gameEvent = order.gameEvent;
     saved.samples.push([time, ...order.progress]);
   }
 
@@ -653,7 +684,8 @@ async function sendEventsToPhones(history, snapshot, events) {
   });
   const { sent, problems } = await sendPhoneAlerts(alerts, settings);
   for (const problem of problems) console.log(`::warning::Phone alert not sent: ${problem}`);
-  if (sent > 0) console.log(`Phone alerts: ${sent} sent to the ntfy topic ${settings.topic}.`);
+  // a notice, so the run's summary shows it (the log itself is harder to reach)
+  if (sent > 0) console.log(`::notice::Phone alerts: ${sent} of ${alerts.length} sent to the ntfy topic ${settings.topic}.`);
 }
 
 // The command line: reads the files, adds a reading, writes them back compactly.
