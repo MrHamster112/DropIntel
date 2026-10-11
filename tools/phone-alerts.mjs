@@ -53,6 +53,7 @@ function describeTimeLeft(seconds) {
 // The message under the title: the event as the war record says it, plus the defense's deadline for
 // an attack when the reading has it.
 function describeAlertMessage(event, battles) {
+  if (event.type === 'newOrder' && event.majorOrder === false) return 'A smaller order beside the Major Order, with its own deadline.';
   if (event.type === 'newOrder') return event.text.replace(/^New Major Order:\s*/, '') || event.text;
   if (event.type === 'attack') {
     const defense = battles.find((battle) => battle.index === event.planet && battle.kind === 'defense');
@@ -72,7 +73,8 @@ export function buildPhoneAlerts(events, { nameOfPlanet = (index) => `Planet ${i
     if (!style) continue;
     const hasPlanet = Number.isInteger(event.planet);
     alerts.push({
-      title: style.title(hasPlanet ? nameOfPlanet(event.planet) : ''),
+      // a smaller order's event names its kind ("New Strategic Threat")
+      title: event.type === 'newOrder' && event.majorOrder === false ? event.text : style.title(hasPlanet ? nameOfPlanet(event.planet) : ''),
       message: describeAlertMessage(event, battles),
       tags: event.faction ? [style.tag, event.faction] : [style.tag],
       priority: style.priority,

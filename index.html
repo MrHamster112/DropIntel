@@ -109,7 +109,7 @@
         <label class="alert-master"><input type="checkbox" id="alerts-enabled" aria-describedby="alerts-phone-note"> Alert me while this page is open (off by default)</label>
         <p id="alerts-phone-note" class="section-hint">On phones, alerts only work while DropIntel is open on screen: phones pause pages in the background. For alerts with the page closed, use ntfy (below).</p>
         <div class="alert-types" role="group" aria-label="What to alert about">
-          <label><input type="checkbox" data-alert-type="newOrder"> A new Major Order</label>
+          <label><input type="checkbox" data-alert-type="newOrder"> A new Major Order or smaller order</label>
           <label><input type="checkbox" data-alert-type="newDispatch"> A new dispatch</label>
           <label><input type="checkbox" data-alert-type="watchedProgress"> A watched planet reaches 25, 50 or 75%</label>
           <label><input type="checkbox" data-alert-type="watchedDefense"> A watched planet's defense is failing</label>
@@ -206,9 +206,15 @@
         <p id="mo-more" class="mo-more"></p>
         <details class="section-hint mo-note">
           <summary>How is this worded?</summary>
-          <p>The page works out these tasks by itself from the game's data and names the enemy faction, not the exact enemy, so a task can be worded wrong. The online version at mrhamster112.github.io/DropIntel is corrected by hand; a downloaded (offline) copy only has the corrections made before it was downloaded.</p>
+          <p>The page works out these tasks by itself from the game's data. It names the exact enemy only when the game's own briefing names it for that number, otherwise the enemy faction, so a task can be worded wrong. The online version at mrhamster112.github.io/DropIntel is corrected by hand; a downloaded (offline) copy only has the corrections made before it was downloaded.</p>
         </details>
       </div>
+    </section>
+
+    <section id="side-orders-box" class="panel side-orders-box" aria-labelledby="side-orders-heading">
+      <h2 id="side-orders-heading">Strategic opportunities and minor orders</h2>
+      <p class="section-hint">Smaller orders High Command runs beside the Major Order, each with its own tasks and deadline.</p>
+      <div id="side-orders" class="side-orders"></div>
     </section>
 
     <section class="panel" aria-labelledby="drop-heading">

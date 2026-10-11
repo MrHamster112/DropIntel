@@ -184,6 +184,21 @@ function readOrderNamesFromStatus(warStatus) {
   return names;
 }
 
+// The feeds title a Major Order "MAJOR ORDER"; the smaller orders beside it (strategic
+// opportunities, minor orders) carry their own title ("STRATEGIC THREAT", 11 Oct 2026). The page
+// tells them apart the same way (script.js: isMajorOrder). No title counts as a Major Order.
+export function isMajorOrderTitle(feedTitle) {
+  const title = String(feedTitle ?? '').replace(/\s+/g, ' ').trim().toUpperCase();
+  return title === '' || title === 'MAJOR ORDER';
+}
+
+// An order's kind in words: "Major Order", or a smaller order's title in normal capitals.
+export function describeOrderKind(feedTitle) {
+  if (isMajorOrderTitle(feedTitle)) return 'Major Order';
+  return String(feedTitle).toLowerCase().split(/\s+/).filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
+}
+
 // What the feed says an order is, kept beside its samples: its own title, briefing, tasks (type,
 // values, valueTypes), rewards, flags and any field added later, so the page and a session can tell
 // a Major Order from the smaller orders that run beside it. progress and the deadline are kept apart.
@@ -243,6 +258,7 @@ export function snapshotFromPrimary({ war, campaigns, assignments, spaceStations
     orders: Array.isArray(assignments) ? assignments.map((order) => ({
       id: numberOrNull(order?.id),
       title: orderNames.get(numberOrNull(order?.id)) || String(order?.title || order?.briefing || 'Major Order'),
+      feedTitle: typeof order?.title === 'string' ? order.title : '',
       expiresAt: toSeconds(order?.expiration),
       targets: readTaskTargets(order?.tasks),
       progress: (Array.isArray(order?.progress) ? order.progress : []).map(numberOrNull),
@@ -304,6 +320,7 @@ export function snapshotFromBackup({ warStatus, campaigns, majorOrders }, takenA
     orders: Array.isArray(majorOrders) ? majorOrders.map((order) => ({
       id: numberOrNull(order?.id32),
       title: orderNames.get(numberOrNull(order?.id32)) || String(order?.setting?.overrideTitle || order?.setting?.overrideBrief || 'Major Order'),
+      feedTitle: typeof order?.setting?.overrideTitle === 'string' ? order.setting.overrideTitle : '',
       expiresAt: numberOrNull(order?.expiresIn) !== null ? takenAt + Math.round(order.expiresIn) : null,
       targets: readTaskTargets(order?.setting?.tasks),
       progress: (Array.isArray(order?.progress) ? order.progress : []).map(numberOrNull),
@@ -569,7 +586,11 @@ export function findEvents(history, snapshot, season) {
 
   if (snapshot.orders && state.orderIds && !isBaseline) {
     for (const order of snapshot.orders) {
-      if (!state.orderIds.includes(order.id)) addEvent('newOrder', `New Major Order: ${order.title}`);
+      if (state.orderIds.includes(order.id)) continue;
+      const kind = describeOrderKind(order.feedTitle);
+      const text = order.title.trim().toUpperCase() === kind.toUpperCase() ? `New ${kind}` : `New ${kind}: ${order.title}`;
+      // majorOrder: false marks a smaller order (phone alerts title it by its kind)
+      events.push(isMajorOrderTitle(order.feedTitle) ? { time, type: 'newOrder', text } : { time, type: 'newOrder', text, majorOrder: false });
     }
   }
 

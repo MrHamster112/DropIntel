@@ -275,6 +275,18 @@ main { outline: none; }
 .mo-campaign-reward { margin: 0 0 6px; color: var(--text-secondary); }
 .mo-more { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
 
+/* Strategic opportunities and minor orders: smaller cards in the Major Order's style, a quieter edge */
+.side-orders-box { border-left: 4px solid var(--border-strong); }
+.side-orders { display: grid; gap: 12px; }
+.side-order { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); padding: 12px 14px; }
+.side-order-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.side-order-title { margin: 0; font-size: 1.1rem; }
+.side-order-time { color: var(--accent); font-weight: 600; font-size: 0.9rem; }
+.side-order-kind { margin: 2px 0 0; color: var(--text-muted); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.side-order-briefing { color: var(--text-secondary); margin: 6px 0 10px; max-width: 70ch; }
+.side-order-tasks { margin-bottom: 8px; }
+.side-order-reward { margin: 0; color: var(--text-secondary); font-size: 0.9rem; }
+
 /* ── METERS AND STATUS LINES ──────────────────────────────────────────────── */
 
 .meter {

@@ -782,7 +782,7 @@ async function downloadEverythingFromBackupApi() {
     apiData.assignments = majorOrders.filter(isPlainObject).map(backupOrder => normalizeAssignment({
       id:        backupOrder.id32,
       progress:  backupOrder.progress || [],
-      title:     backupOrder.setting?.overrideTitle || 'ORDER',
+      title:     backupOrder.setting?.overrideTitle || '',
       briefing:  backupOrder.setting?.overrideBrief || '',
       tasks:     backupOrder.setting?.tasks || [],
       reward:    backupOrder.setting?.reward,
@@ -895,6 +895,68 @@ function getOrderTitle(assignment) {
 // An order's full briefing from the game, or '' when the war status hasn't given one.
 function getGameOrderBriefing(assignment) {
   return apiData.gameOrderTextById[assignment.id]?.briefing || '';
+}
+
+// ── MAJOR ORDER OR A SMALLER ORDER ───────────────────────────────────────────
+// The feeds list the Major Order and the smaller orders beside it (strategic opportunities, minor
+// orders) side by side. On 11 Oct 2026 the Major Order (BIO-SAMPLE CULLING) had the feed title
+// "MAJOR ORDER", 45 medals and a named event in the war status; the order beside it had the title
+// "STRATEGIC THREAT", no reward and an unnamed event. Both had flags 1, so the title is what tells
+// them apart.
+
+const MAJOR_ORDER_FEED_TITLE = 'MAJOR ORDER';
+
+// True for the Major Order, false for a strategic opportunity or minor order. An order without a
+// title counts as a Major Order, as every order did before. The war record's copy says itself
+// (isMajorOrder), since its title is the order's name.
+function isMajorOrder(assignment) {
+  if (typeof assignment?.isMajorOrder === 'boolean') return assignment.isMajorOrder;
+  const feedTitle = String(assignment?.title ?? '').replace(/\s+/g, ' ').trim().toUpperCase();
+  return feedTitle === '' || feedTitle === MAJOR_ORDER_FEED_TITLE;
+}
+
+// The Major Orders among the current orders (normally one).
+function getMajorOrders(assignments = apiData.assignments) {
+  return asArray(assignments).filter(isMajorOrder);
+}
+
+// The strategic opportunities and minor orders beside the Major Order.
+function getSideOrders(assignments = apiData.assignments) {
+  return asArray(assignments).filter(assignment => !isMajorOrder(assignment));
+}
+
+// A new order in words: "New Major Order: BIO-SAMPLE CULLING", or just its kind when its name is
+// its kind ("New Strategic Threat", "New Major Order" before the game's name is known).
+function describeNewOrder(assignment) {
+  const name = getOrderTitle(assignment) || stripGameMarkup(assignment.briefing).slice(0, 80);
+  const kind = describeOrderKind(assignment);
+  return !name || simplifyTaskText(name) === simplifyTaskText(kind) ? `New ${kind}` : `New ${kind}: ${name}`;
+}
+
+// An order's kind in words: "Major Order", or a smaller order's own title in normal capitals
+// ("Strategic Threat"), or "Order" when it has none.
+function describeOrderKind(assignment) {
+  if (isMajorOrder(assignment)) return 'Major Order';
+  const words = String(assignment?.title ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length ? words.map(word => word[0].toUpperCase() + word.slice(1)).join(' ') : 'Order';
+}
+
+// The enemy a kill task names, as the game's own briefing writes it: the briefing highlights each
+// target as "<i=1>30,000,000 Bile Spewers</i>", so a highlighted amount equal to the task's target
+// gives the name. Null when no highlight has that amount, or two give different names.
+function findEnemyNameInBriefing(briefing, targetAmount) {
+  if (!briefing || !isFiniteNumber(targetAmount) || targetAmount <= 0) return null;
+  const names = new Set();
+  for (const match of String(briefing).matchAll(/<i=\d+>\s*(\d[\d,.\s]*?)\s+([A-Za-z][A-Za-z' -]{1,40}?)\s*<\/i>/g)) {
+    if (Number(match[1].replace(/[^\d]/g, '')) === targetAmount) names.add(match[2].trim());
+  }
+  return names.size === 1 ? [...names][0] : null;
+}
+
+// The name of a kill task's enemy from the briefing of the order that holds the task, or null.
+function findEnemyNameFromGame(task) {
+  const assignment = asArray(apiData.assignments).find(order => asArray(order.tasks).includes(task));
+  return assignment ? findEnemyNameInBriefing(getGameOrderBriefing(assignment), getTaskValue(task, TASK_VALUE_TYPE.TARGET_AMOUNT)) : null;
 }
 
 // ── POST-PROCESSING ──────────────────────────────────────────────────────────
@@ -1181,6 +1243,7 @@ function convertSharedHistory(rawHistory) {
       title: typeof rawOrder?.title === 'string' ? rawOrder.title : '',
       expiresAtTimestamp: isFiniteNumber(rawOrder?.expiresAt) ? rawOrder.expiresAt * 1000 : null,
       targets: asArray(rawOrder?.targets).map(target => (isFiniteNumber(target) ? target : null)),
+      ...readRecordOrderDefinition(rawOrder),
     };
     for (const sample of asArray(rawOrder?.samples)) {
       if (!Array.isArray(sample) || !isFiniteNumber(sample[0])) continue;
@@ -3138,9 +3201,9 @@ function describeDefenseOutlook(planet, trend, nowTimestamp = Date.now()) {
   return outlook;
 }
 
-// Which planets and enemy factions the current assignments point players at.
-// Faction targets only come from tasks without a planet (e.g. "kill 5M bugs").
-function getMajorOrderTargets(assignments = apiData.assignments) {
+// Which planets and enemy factions the Major Order points players at (the smaller orders beside
+// it are left out). Faction targets only come from tasks without a planet (e.g. "kill 5M bugs").
+function getMajorOrderTargets(assignments = getMajorOrders()) {
   const planetIndexes = new Set();
   const factionKeys = new Set();
   for (const assignment of asArray(assignments)) {
@@ -3160,21 +3223,31 @@ function getMajorOrderTargets(assignments = apiData.assignments) {
 
 // Turns one assignment task into a sentence and a progress figure. The owner's
 // wording fixes (major-order-fixes.js) replace a sentence the page got wrong; failing
-// that, the owner's name for the task's enemy id names the enemy in a kill task.
+// that, the owner's name for the task's enemy id names the enemy in a kill task, and
+// failing that, the name the game's own briefing gives that target.
 function describeAssignmentTask(task, progressValue) {
   const fixes = getMajorOrderFixes();
-  const description = describeAssignmentTaskAutomatically(task, progressValue);
-  const fix = fixes.taskText.find(entry => fixMatchesSentence(entry, description.sentence));
+  const automatic = describeAssignmentTaskAutomatically(task, progressValue);
+  const description = nameTheEnemyOfTask(task, progressValue, automatic, fixes);
+  // a fix may quote the page's wording with the faction or with the enemy's name
+  const fix = fixes.taskText.find(entry => fixMatchesSentence(entry, automatic.sentence) || fixMatchesSentence(entry, description.sentence));
   if (fix) {
     description.automaticSentence = description.sentence;
     description.sentence = fix.showInstead.trim();
     description.enemyIsUnnamed = false; // the owner's words are the game's
-    return description;
   }
-  const enemyName = description.enemyIsUnnamed && task.type === TASK_TYPE.ERADICATE
-    ? fixes.enemyNameByUnitId[String(getTaskValue(task, TASK_VALUE_TYPE.UNIT_ID))] : undefined;
-  if (!enemyName) return description;
-  return { ...describeAssignmentTaskAutomatically(task, progressValue, { enemyName }), enemyNamedByOwner: true };
+  return description;
+}
+
+// A kill task's wording with its enemy named: by the owner's name for its id, else by the game's
+// briefing. Any other task, or an enemy nobody names, keeps the automatic wording.
+function nameTheEnemyOfTask(task, progressValue, automatic, fixes = getMajorOrderFixes()) {
+  if (!automatic.enemyIsUnnamed || task.type !== TASK_TYPE.ERADICATE) return automatic;
+  const ownerName = fixes.enemyNameByUnitId[String(getTaskValue(task, TASK_VALUE_TYPE.UNIT_ID))];
+  if (ownerName) return { ...describeAssignmentTaskAutomatically(task, progressValue, { enemyName: ownerName }), enemyNamedByOwner: true };
+  const briefingName = findEnemyNameFromGame(task);
+  if (briefingName) return { ...describeAssignmentTaskAutomatically(task, progressValue, { enemyName: briefingName }), enemyNamedByBriefing: true };
+  return automatic;
 }
 
 // True when a fix's pageSays is this sentence. Typed on a phone, it can differ in capitals,
@@ -3931,8 +4004,16 @@ function buildReinforcementNote(planet) {
   return buildStatusLine({ status: impact.flips ? 'good' : 'neutral', icon: '+', text }, 'verdict reinforcement-line');
 }
 
+// The smaller orders whose tasks point at a planet, as chip texts ("Strategic Threat target").
+// They name the planet only: the ranking follows the Major Order.
+function describeSideOrderTargets(planetIndex) {
+  return getSideOrders()
+    .filter(order => asArray(order.tasks).some(task => getTaskLocation(task).planetIndex === planetIndex))
+    .map(order => `${describeOrderKind(order)} target`);
+}
+
 // One planet card. Pass liberationOutlook for a liberation, defenseOutlook for
-// a defense; reasons are the "why this planet" chips.
+// a defense; reasons are the "why this planet" chips (a smaller order's target adds its own).
 function buildPlanetCard(planet, { idPrefix, reasons = [], liberationOutlook = null,
                                    defenseOutlook = null, isMajorOrderPlanet = false, extraContent = [] }) {
   const isDefense = defenseOutlook !== null;
@@ -3941,8 +4022,9 @@ function buildPlanetCard(planet, { idPrefix, reasons = [], liberationOutlook = n
   const enemyName = enemyKey ? getFactionDisplayName(enemyKey) : 'Unknown enemy';
   const enemyIcon = enemyKey ? getFactionIconFile(enemyKey) : null;
 
-  const reasonChips = reasons.length === 0 ? null : buildElement('ul', { className: 'reason-list' },
-    reasons.map(reason => buildElement('li', {
+  const allReasons = [...reasons, ...describeSideOrderTargets(planet.index).filter(reason => !reasons.includes(reason))];
+  const reasonChips = allReasons.length === 0 ? null : buildElement('ul', { className: 'reason-list' },
+    allReasons.map(reason => buildElement('li', {
       className: reason === 'Major Order target' ? 'reason reason-major-order' : 'reason',
       text: reason,
     })));
@@ -4024,7 +4106,7 @@ function listPageParts() {
     isShown: () => viewMode === 'advanced' && !collapsedSectionIds.has(sectionId) });
   return [
     { id: 'simple-view', isShown: () => viewMode === 'simple', renderers: [
-      renderOrderForEveryone, renderSinceLastVisit, renderSimpleGlance, renderMajorOrder, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
+      renderOrderForEveryone, renderSinceLastVisit, renderSimpleGlance, renderMajorOrder, renderSideOrders, renderSimpleDefenses, renderSimpleEvents, renderSimpleWatchlist,
       renderSimpleDropTargets, renderSimpleLatestDispatch] },
     advancedSection('advanced-section-war-map', [renderWarMap]),
     advancedSection('advanced-section-gambits', [renderGambits]),
@@ -4143,16 +4225,18 @@ function renderSimpleGlance() {
 }
 
 // The first Major Order: title, time left, briefing, each task as a sentence
-// with a progress bar, the reward, and a line for any other orders
-// → #mo-box (#mo-empty / #mo-content)
+// with a progress bar, the reward, and a line for any other Major Orders (the
+// smaller orders have their own panel) → #mo-box (#mo-empty / #mo-content)
 function renderMajorOrder() {
   const emptyMessage = document.getElementById('mo-empty');
   const moContent    = document.getElementById('mo-content');
+  const majorOrders  = getMajorOrders();
 
-  if (apiData.assignments.length === 0) {
-    emptyMessage.textContent = hasAnyData()
-      ? 'No Major Order right now. Any liberation or defense still helps the war.'
-      : buildWaitingMessage().textContent;
+  if (majorOrders.length === 0) {
+    const sideOrderCount = getSideOrders().length;
+    emptyMessage.textContent = !hasAnyData() ? buildWaitingMessage().textContent
+      : 'No Major Order right now. Any liberation or defense still helps the war.'
+        + (sideOrderCount ? ` ${sideOrderCount === 1 ? 'A smaller order is' : 'Smaller orders are'} active: see Strategic opportunities and minor orders.` : '');
     emptyMessage.style.display = '';
     moContent.style.display    = 'none';
     return;
@@ -4160,7 +4244,7 @@ function renderMajorOrder() {
   emptyMessage.style.display = 'none';
   moContent.style.display    = '';
 
-  const assignment = apiData.assignments[0];
+  const assignment = majorOrders[0];
   const secondsLeft = getSecondsUntil(assignment.expiration);
 
   putTextInElement('mo-title', getOrderTitle(assignment));
@@ -4171,41 +4255,82 @@ function renderMajorOrder() {
   const gameBriefingBox = document.getElementById('mo-game-briefing');
   if (gameBriefingBox) gameBriefingBox.hidden = gameBriefing === '';
   replaceContent('mo-game-briefing-text', buildGameMessage(gameBriefing));
-  const unnamedEnemyNote = gameBriefing ? UNNAMED_ENEMY_NOTE_SEE_BRIEFING : UNNAMED_ENEMY_NOTE;
 
-  replaceContent('mo-tasks', assignment.tasks.map((task, taskPosition) => {
-    const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
-    const statusName = described.isComplete ? 'good' : 'neutral';
-    const pace = describeMajorOrderTaskPace(assignment, taskPosition);
-    const paceFacts = describeMajorOrderPaceFacts(pace);
-    const taskPlanet = apiData.planetsByIndex[getTaskLocation(task).planetIndex] || null;
-    return buildElement('li', { className: `mo-task${described.isComplete ? ' is-complete' : ''}` }, [
-      buildElement('p', { className: 'mo-task-sentence' }, [
-        described.isComplete
-          ? buildElement('span', { className: 'status-icon', text: '✔', attributes: { 'aria-hidden': 'true' } }) : null,
-        ...buildTaskSentenceWithPlanet(described.sentence, taskPlanet),
-        described.enemyIsUnnamed ? buildElement('span', { className: 'mo-task-unnamed', text: ` ${unnamedEnemyNote}` }) : null,
-      ]),
-      described.progressPercent !== null ? buildMeter(described.progressPercent, 'Complete', statusName) : null,
-      buildElement('p', { className: 'mo-task-progress',
-        text: described.isComplete ? `Done — ${described.progressText}` : described.progressText }),
-      pace.status === 'done' ? null : buildElement('div', { className: 'mo-task-pace' }, [
-        buildStatusLine(describeMajorOrderPaceLine(pace)),
-        paceFacts ? buildElement('p', { className: 'mo-task-pace-facts', text: paceFacts }) : null,
-        pace.planetIsHeld ? null : buildElement('p', { className: 'mo-task-pace-note', text: describeMajorOrderPaceCaveat(pace.paceMinutes) }),
-      ]),
-    ]);
-  }));
+  replaceContent('mo-tasks', assignment.tasks.map((task, taskPosition) => buildOrderTaskItem(assignment, taskPosition)));
 
   const rewardText = describeReward(assignment.reward);
   putTextInElement('mo-reward', rewardText ? `Reward: ${rewardText}` : '');
   renderMajorOrderCampaign(assignment);
 
-  const otherOrders = apiData.assignments.slice(1);
+  const otherOrders = majorOrders.slice(1);
   putTextInElement('mo-more', otherOrders.length === 0 ? '' : 'Also active: ' + otherOrders.map(order => {
     const orderSecondsLeft = getSecondsUntil(order.expiration);
     return `${getOrderTitle(order)}${orderSecondsLeft ? ` (${formatDuration(orderSecondsLeft)} left)` : ''}`;
   }).join(' · '));
+}
+
+// One task of an order as a list item: its sentence (the planet's name opens the drawer), the
+// bar, the progress and, unless it is done, its pace with the caveat.
+function buildOrderTaskItem(assignment, taskPosition) {
+  const task = assignment.tasks[taskPosition];
+  const described = describeAssignmentTask(task, assignment.progress[taskPosition]);
+  const statusName = described.isComplete ? 'good' : 'neutral';
+  const pace = describeMajorOrderTaskPace(assignment, taskPosition);
+  const paceFacts = describeMajorOrderPaceFacts(pace);
+  const taskPlanet = apiData.planetsByIndex[getTaskLocation(task).planetIndex] || null;
+  const unnamedEnemyNote = getGameOrderBriefing(assignment) ? UNNAMED_ENEMY_NOTE_SEE_BRIEFING : UNNAMED_ENEMY_NOTE;
+  return buildElement('li', { className: `mo-task${described.isComplete ? ' is-complete' : ''}` }, [
+    buildElement('p', { className: 'mo-task-sentence' }, [
+      described.isComplete
+        ? buildElement('span', { className: 'status-icon', text: '✔', attributes: { 'aria-hidden': 'true' } }) : null,
+      ...buildTaskSentenceWithPlanet(described.sentence, taskPlanet),
+      described.enemyIsUnnamed ? buildElement('span', { className: 'mo-task-unnamed', text: ` ${unnamedEnemyNote}` }) : null,
+    ]),
+    described.progressPercent !== null ? buildMeter(described.progressPercent, 'Complete', statusName) : null,
+    buildElement('p', { className: 'mo-task-progress',
+      text: described.isComplete ? `Done — ${described.progressText}` : described.progressText }),
+    pace.status === 'done' ? null : buildElement('div', { className: 'mo-task-pace' }, [
+      buildStatusLine(describeMajorOrderPaceLine(pace)),
+      paceFacts ? buildElement('p', { className: 'mo-task-pace-facts', text: paceFacts }) : null,
+      pace.planetIsHeld ? null : buildElement('p', { className: 'mo-task-pace-note', text: describeMajorOrderPaceCaveat(pace.paceMinutes) }),
+    ]),
+  ]);
+}
+
+// The strategic opportunities and minor orders beside the Major Order, one card each: kind and
+// title, time left, the feed's briefing, the tasks as on the Major Order card, the reward when
+// there is one → #side-orders
+function renderSideOrders() {
+  if (!document.getElementById('side-orders')) return;
+  if (!hasAnyData()) {
+    replaceContent('side-orders', [buildWaitingMessage()]);
+    return;
+  }
+  const sideOrders = getSideOrders();
+  if (sideOrders.length === 0) {
+    replaceContent('side-orders', [buildElement('p', { className: 'empty-state',
+      text: 'None right now. When High Command issues a smaller order beside the Major Order (a strategic threat or opportunity, a minor order), it shows here.' })]);
+    return;
+  }
+  replaceContent('side-orders', sideOrders.map(assignment => {
+    const secondsLeft = getSecondsUntil(assignment.expiration);
+    const rewardText = describeReward(assignment.reward);
+    const title = getOrderTitle(assignment);
+    const kind = describeOrderKind(assignment);
+    return buildElement('article', { className: 'side-order', attributes: { 'data-order-id': String(assignment.id) } }, [
+      buildElement('div', { className: 'side-order-head' }, [
+        buildElement('h3', { className: 'side-order-title', text: title }),
+        buildElement('span', { className: 'side-order-time', text: secondsLeft === null ? 'No deadline given'
+          : secondsLeft === 0 ? 'Deadline passed' : `${formatDuration(secondsLeft)} left` }),
+      ]),
+      simplifyTaskText(kind) === simplifyTaskText(title) ? null
+        : buildElement('p', { className: 'side-order-kind', text: kind }),
+      assignment.briefing ? buildElement('p', { className: 'side-order-briefing', text: stripGameMarkup(assignment.briefing) }) : null,
+      buildElement('ol', { className: 'mo-tasks side-order-tasks' },
+        assignment.tasks.map((task, taskPosition) => buildOrderTaskItem(assignment, taskPosition))),
+      buildElement('p', { className: 'side-order-reward', text: rewardText ? `Reward: ${rewardText}` : 'No reward listed in the feed.' }),
+    ]);
+  }));
 }
 
 // A task sentence with its planet's name as a button that opens the planet drawer: the name
@@ -4595,7 +4720,8 @@ function renderAssignmentsInFull() {
         .map((valueType, valuePosition) => `${valueType}=${asArray(task.values)[valuePosition]}`).join(' ');
       const sentence = described.automaticSentence
         ? `${described.sentence} (fixed by hand; the page said "${described.automaticSentence}")`
-        : described.enemyNamedByOwner ? `${described.sentence} (enemy named by hand from its id)` : described.sentence;
+        : described.enemyNamedByOwner ? `${described.sentence} (enemy named by hand from its id)`
+          : described.enemyNamedByBriefing ? `${described.sentence} (enemy named from the game's briefing, which gives this number)` : described.sentence;
       return [String(taskPosition + 1), sentence, String(task.type ?? '—'), rawValues || '—',
               described.progressText, formatPercent(described.progressPercent)];
     });
@@ -4604,6 +4730,8 @@ function renderAssignmentsInFull() {
     return buildElement('article', { className: 'order-detail' }, [
       buildElement('h3', { text: getOrderTitle(assignment) }),
       buildFactList([
+        ['Kind', isMajorOrder(assignment) ? 'Major Order'
+          : `${describeOrderKind(assignment)} (a smaller order beside the Major Order; the feed's title is "${assignment.title}")`],
         ['Deadline', formatDeadline(assignment.expiration)],
         ['Reward', describeReward(assignment.reward) || null],
         ['Order ID', String(assignment.id ?? '—')],
@@ -4688,7 +4816,10 @@ function buildMajorOrderFixesNote() {
 // The wording fixes that match no task of the current orders.
 function findUnusedTaskTextFixes(fixes = getMajorOrderFixes()) {
   const sentences = asArray(apiData.assignments).flatMap(assignment => asArray(assignment.tasks)
-    .map((task, position) => describeAssignmentTaskAutomatically(task, asArray(assignment.progress)[position]).sentence));
+    .flatMap((task, position) => {
+      const automatic = describeAssignmentTaskAutomatically(task, asArray(assignment.progress)[position]);
+      return [automatic.sentence, nameTheEnemyOfTask(task, asArray(assignment.progress)[position], automatic, fixes).sentence];
+    }));
   return fixes.taskText.filter(fix => !sentences.some(sentence => fixMatchesSentence(fix, sentence)));
 }
 
@@ -5487,7 +5618,7 @@ function renderTrendGraphs() {
 
   // 1. Major Order progress against time left
   blocks.push(buildElement('h3', { text: 'Major Order progress against time left' }));
-  const majorOrder = apiData.assignments[0];
+  const majorOrder = getMajorOrders()[0];
   if (!majorOrder) {
     blocks.push(buildElement('p', { className: 'empty-state', text: 'No Major Order right now.' }));
   } else {
@@ -6712,7 +6843,7 @@ function joinInWords(items) {
 // points at: {factionKey: [task descriptions]}. A task on a planet belongs to
 // that planet's enemy; a task without one, to the faction it names. Tasks for
 // no enemy front (holding a quiet planet of ours) are left out.
-function groupOpenMajorOrderTasksByFront(assignments = apiData.assignments) {
+function groupOpenMajorOrderTasksByFront(assignments = getMajorOrders()) {
   const tasksByFront = {};
   for (const assignment of asArray(assignments)) {
     asArray(assignment.tasks).forEach((task, taskPosition) => {
@@ -6731,7 +6862,7 @@ function groupOpenMajorOrderTasksByFront(assignments = apiData.assignments) {
 // The Major Order note on top of an AI overview, worked out by the page from
 // the order itself (not by the AI): whether the order counts this front, or
 // which fronts it wants instead. Null when no unfinished task points at a front.
-function describeMajorOrderFocus(factionKey, assignments = apiData.assignments) {
+function describeMajorOrderFocus(factionKey, assignments = getMajorOrders()) {
   const tasksByFront = groupOpenMajorOrderTasksByFront(assignments);
   const orderFronts = FRONT_ORDER.filter(front => tasksByFront[front]);
   if (orderFronts.length === 0) return null;
@@ -7262,6 +7393,7 @@ function describeVisitToRemember(nowTimestamp) {
     orders: asArray(apiData.assignments).map(assignment => ({
       id: assignment.id,
       title: getOrderTitle(assignment),
+      isMajorOrder: isMajorOrder(assignment),
       taskPercents: asArray(assignment.tasks).map((task, position) => {
         const percent = describeAssignmentTask(task, asArray(assignment.progress)[position]).progressPercent;
         return isFiniteNumber(percent) ? Math.round(percent * 10) / 10 : null;
@@ -7298,7 +7430,7 @@ function describeSinceLastVisit(lastVisit) {
   for (const assignment of asArray(apiData.assignments)) {
     const before = lastVisit.orders.find(order => order.id === assignment.id);
     if (!before) {
-      orderLines.push({ status: 'warning', text: `New Major Order: ${getOrderTitle(assignment)}` });
+      orderLines.push({ status: 'warning', text: describeNewOrder(assignment) });
       continue;
     }
     asArray(assignment.tasks).forEach((task, position) => {
@@ -7313,7 +7445,10 @@ function describeSinceLastVisit(lastVisit) {
   }
   const currentIds = new Set(asArray(apiData.assignments).map(assignment => assignment.id));
   for (const order of lastVisit.orders) {
-    if (!currentIds.has(order.id) && typeof order.title === 'string') orderLines.push({ status: 'neutral', text: `The Major Order ${order.title} is over.` });
+    if (!currentIds.has(order.id) && typeof order.title === 'string') {
+      // a visit remembered before 11 Oct 2026 has no isMajorOrder: every order then counted as one
+      orderLines.push({ status: 'neutral', text: `${order.isMajorOrder === false ? 'The order' : 'The Major Order'} ${order.title} is over.` });
+    }
   }
 
   const newDispatchCount = asArray(apiData.newsDispatches)
@@ -8060,7 +8195,8 @@ function buildPlanetDrawerBody(details) {
   const planet = details.planet;
   const sections = [
     buildElement('p', { className: 'planet-drawer-subline', text: [details.ownerText, planet.sector ? `${planet.sector} sector` : null,
-      details.isMajorOrderTarget ? 'Major Order target' : null, isWatched(planet.index) ? 'Watching' : null].filter(Boolean).join(' · ') }),
+      details.isMajorOrderTarget ? 'Major Order target' : null, ...describeSideOrderTargets(planet.index),
+      isWatched(planet.index) ? 'Watching' : null].filter(Boolean).join(' · ') }),
   ];
   if (details.progressPercent !== null) {
     sections.push(buildMeter(details.progressPercent, details.progressLabel, details.verdictLine.status));
@@ -9411,8 +9547,7 @@ function describeWatchedProgress(planet) {
 function collectAlertCandidates(nowTimestamp = Date.now()) {
   const candidates = [];
   for (const assignment of apiData.assignments) {
-    candidates.push({ key: `order:${assignment.id}`, type: 'newOrder', planetIndex: null,
-      text: `New Major Order: ${assignment.title || stripGameMarkup(assignment.briefing).slice(0, 80) || 'Major Order'}` });
+    candidates.push({ key: `order:${assignment.id}`, type: 'newOrder', planetIndex: null, text: describeNewOrder(assignment) });
   }
   for (const dispatch of apiData.newsDispatches) {
     if (dispatch.id === undefined || dispatch.id === null) continue;
@@ -9883,7 +10018,7 @@ function pickFrom(entry) {
 
 // The current orders' target planets, each from the moment the record first saw its order (before
 // that the planet wasn't the order's): [{ planetIndexes, fromTimestamp }].
-function listMajorOrderPlanetsOverTime(record, assignments = apiData.assignments) {
+function listMajorOrderPlanetsOverTime(record, assignments = getMajorOrders()) {
   return asArray(assignments).map(assignment => {
     const firstSample = record.majorOrderSamples.find(sample => String(sample.assignmentId) === String(assignment.id));
     return { planetIndexes: getMajorOrderTargets([assignment]).planetIndexes, fromTimestamp: firstSample ? firstSample.timestamp : -Infinity };
@@ -9893,7 +10028,7 @@ function listMajorOrderPlanetsOverTime(record, assignments = apiData.assignments
 // Replays the record and says what to drop on now. Returns { status: 'pick' | 'close' | 'measuring' |
 // 'none' | 'ended' | 'unavailable', pick, closeCall, readingTimestamp }. With live war feeds, a pick
 // whose fight they no longer list has ended ('ended') until the record's next reading.
-function decideOrderForEveryone(record = apiData.sharedHistory, assignments = apiData.assignments,
+function decideOrderForEveryone(record = apiData.sharedHistory, assignments = getMajorOrders(),
                                 liveBattleIndexes = apiData.currentDataSource ? apiData.indexesOfPlanetsWithActiveBattles : null) {
   const readings = record ? listRecordReadingTimestamps(record) : [];
   if (readings.length === 0) return { status: 'unavailable', pick: null, closeCall: null, readingTimestamp: null };
@@ -9923,7 +10058,7 @@ function decideOrderForEveryone(record = apiData.sharedHistory, assignments = ap
 function getOrderForEveryone() {
   const record = apiData.sharedHistory;
   const live = apiData.currentDataSource ? [...apiData.indexesOfPlanetsWithActiveBattles].sort().join(',') : 'none';
-  const key = [record?.updatedAtTimestamp ?? 'none', asArray(apiData.assignments).map(order => order.id).join(','),
+  const key = [record?.updatedAtTimestamp ?? 'none', getMajorOrders().map(order => order.id).join(','),
     [...getMajorOrderTargets().planetIndexes].sort().join(','), live].join('|');
   if (orderPickCache.key !== key) orderPickCache = { key, decision: decideOrderForEveryone() };
   return orderPickCache.decision;
@@ -10239,8 +10374,9 @@ function buildCampaignFromRecordSample(planetIndex, planetRecord, segment, sampl
     faction: isDefense ? segment.enemy : segment.owner });
 }
 
-// The record's current Major Orders: name, deadline, and each task's progress against its
-// target. What a task asks isn't recorded, so its tasks say so (fromWarRecord).
+// The record's current orders: name, kind, deadline, and each task's progress. Since 11 Oct 2026
+// the record keeps the tasks themselves; an order recorded before has only each task's target,
+// so its tasks say so (fromWarRecord) and it counts as a Major Order.
 function buildAssignmentsFromWarRecord(record) {
   const latestByOrder = new Map();
   for (const sample of record.majorOrderSamples) latestByOrder.set(sample.assignmentId, sample);
@@ -10248,17 +10384,39 @@ function buildAssignmentsFromWarRecord(record) {
   return [...latestByOrder.values()]
     .filter(sample => newestReading - sample.timestamp <= WAR_RECORD_SAME_READING_MILLISECONDS)
     .map(sample => {
-      const order = record.ordersById[sample.assignmentId] || { title: '', expiresAtTimestamp: null, targets: [] };
+      const order = record.ordersById[sample.assignmentId] || { title: '', expiresAtTimestamp: null, targets: [], feedTitle: null, tasks: null };
       return normalizeAssignment({
         id: Number(sample.assignmentId),
+        // the record's title is the order's name, so the kind comes from the feed's own title
         title: order.title,
+        isMajorOrder: typeof order.feedTitle === 'string' ? isMajorOrder({ title: order.feedTitle }) : true,
+        briefing: order.briefing || '',
+        reward: order.reward || null,
         expiration: order.expiresAtTimestamp !== null ? new Date(order.expiresAtTimestamp).toISOString() : null,
         progress: sample.progress,
-        tasks: order.targets.map(target => ({ fromWarRecord: true, type: null,
+        // the tasks themselves when the record has them, else only their targets
+        tasks: order.tasks || order.targets.map(target => ({ fromWarRecord: true, type: null,
           valueTypes: isFiniteNumber(target) ? [TASK_VALUE_TYPE.TARGET_AMOUNT] : [], values: isFiniteNumber(target) ? [target] : [] })),
       });
     })
     .filter(Boolean);
+}
+
+// What the record's copy of an order says it is (since 11 Oct 2026): the feed's title, briefing,
+// tasks and reward, from either API's shape. feedTitle is null for an order recorded before.
+function readRecordOrderDefinition(rawOrder) {
+  const definition = isPlainObject(rawOrder?.definition) ? rawOrder.definition : null;
+  if (!definition) return { feedTitle: null, briefing: '', tasks: null, reward: null };
+  const fields = rawOrder.definitionSource === 'BACKUP' && isPlainObject(definition.setting)
+    ? { title: definition.setting.overrideTitle, briefing: definition.setting.overrideBrief,
+      tasks: definition.setting.tasks, reward: definition.setting.reward }
+    : definition;
+  return {
+    feedTitle: typeof fields.title === 'string' ? fields.title : '',
+    briefing: typeof fields.briefing === 'string' ? fields.briefing : '',
+    tasks: Array.isArray(fields.tasks) ? fields.tasks.filter(isPlainObject) : null,
+    reward: isPlainObject(fields.reward) ? fields.reward : null,
+  };
 }
 
 // True while the page shows the war record instead of the war feeds.
