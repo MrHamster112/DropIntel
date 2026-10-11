@@ -17,8 +17,8 @@
 //   reward:      the campaign reward, e.g. 'Stratagem Permit'.
 //   rewardNeeds: 'majority' when the game says "complete a majority of the Major Orders",
 //                'all' when every order has to be won.
-//   orderCount:  how many orders the campaign has (the 2 in "2/2"). Leave it out when every
-//                order is already listed below.
+//   orderCount:  leave it out: every campaign has 3 orders, and the page counts 3. Only write
+//                it if the game ever shows a campaign with more (the 4 in "1/4").
 //   orders:      every order so far, in the game's order, with its name exactly as the game
 //                writes it. Add result: 'won' or result: 'lost' once an order is over. The
 //                order being fought now has no result; the page finds it by its name.
@@ -31,10 +31,19 @@ const GALACTIC_CAMPAIGNS = [
     name: 'Armored Eagle',
     reward: 'Stratagem Permit',
     rewardNeeds: 'majority',
-    orderCount: 2,
     orders: [
       { name: 'Secure Territory', result: 'won' },
-      { name: 'Resource Acquisition' },
+      { name: 'Resource Acquisition', result: 'lost' },
+      { name: 'Patriotic Invigoration', result: 'won' },
+    ],
+  },
+  {
+    name: 'Epic Purge',
+    reward: 'Stratagem',
+    rewardNeeds: 'majority',
+    orders: [
+      { name: 'Chemical Peacekeeping', result: 'won' },
+      { name: 'Bio-Sample Culling' },
     ],
   },
 ];
