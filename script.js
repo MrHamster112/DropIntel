@@ -3315,6 +3315,14 @@ function describeAssignmentTaskAutomatically(task, progressValue, { enemyName = 
   if (task.type === TASK_TYPE.LIBERATE_PLANET || task.type === TASK_TYPE.HOLD_PLANET) {
     const verb = task.type === TASK_TYPE.LIBERATE_PLANET ? 'Liberate' : 'Hold';
     description.sentence = `${verb} ${planetName || 'the target planet'}`;
+    if (task.type === TASK_TYPE.HOLD_PLANET && planet && planetIsUnderAttack(planet)) {
+      // The feed counts a planet of ours under attack as held (progress 1), but it is only held
+      // once the defense is won: the task stays open with the defense as its bar, as DiversHub and
+      // the game's own bar show it (SENGE 23 on 12 Oct 2026: "Done" while 77.5% defended).
+      description.progressPercent = getDefenseProgressPercent(planet.event);
+      description.progressText = `Under attack: ${formatPercent(description.progressPercent)} defended`;
+      return description;
+    }
     const planetIsOurs = planet ? planet.currentOwner === 'Humans' && !planetIsUnderAttack(planet) : false;
     description.isComplete = progress >= 1 || (task.type === TASK_TYPE.LIBERATE_PLANET && planetIsOurs);
     if (description.isComplete) {
@@ -5275,7 +5283,8 @@ function buildFrontPlayerSeries() {
 // operations). Liberate, hold and defend tasks follow a planet instead: a defend task's
 // count of attacks only moves when a defense ends.
 function taskHasTargetAmount(task) {
-  if (task.type === TASK_TYPE.DEFEND_PLANET) return false;
+  // the game's liberate and hold tasks carry a target of 1 too (11 Oct 2026), which is no count
+  if (task.type === TASK_TYPE.DEFEND_PLANET || task.type === TASK_TYPE.LIBERATE_PLANET || task.type === TASK_TYPE.HOLD_PLANET) return false;
   const targetAmount = getTaskValue(task, TASK_VALUE_TYPE.TARGET_AMOUNT);
   return isFiniteNumber(targetAmount) && targetAmount > 0;
 }
@@ -9902,7 +9911,9 @@ const ORDER_PICK_MARGIN = 0.25;              // a fight must be 25% better (fewe
 const ORDER_PICK_SAVABLE_SHARE = 0.3;        // a defense can be saved if it lacks at most 30% of the Helldivers online…
 const ORDER_PICK_HOPELESS_SHARE = 0.6;       // …and a picked one is let go only past 60%, so it doesn't flicker at the line
 const ORDER_PICK_SAFE_SHARE = 0.5;           // a defense on track that needs no more than half its Helldivers is safe: the pick moves on
-const ORDER_PICK_TIER = { majorOrderDefense: 0, defense: 1, majorOrderLiberation: 2, liberation: 3 };
+// the order's defense on track shares a tier with its liberations: each is a planet the order
+// still needs, ranked by the hours left to finish it
+const ORDER_PICK_TIER = { majorOrderDefense: 0, defense: 1, majorOrderLiberation: 2, majorOrderDefenseOnTrack: 2, liberation: 3 };
 const PUBLIC_PAGE_ADDRESS = 'https://mrhamster112.github.io/DropIntel/';
 
 let orderPickCache = { key: null, decision: null };
@@ -9946,12 +9957,15 @@ function countHelldiversOnlineAt(record, readingTimestamp, battles) {
 }
 
 // How each fight at one reading stands as a pick: { planetIndex, kind, tier, value, eligible,
-// stillOn, measured }. eligible: it can be picked (a defense that needs help and can be saved, or
-// a liberation being won within two weeks); value: what makes one better within a tier (lower is
-// better: the Helldivers a defense lacks, the hours a liberation needs). stillOn: a pick on it holds
-// (still fought and moving: a defense on track because the blob came keeps the blob, until it is
-// safe without half of them; on 3 Oct 2026 a pick held GATRIA, on track with five times the pace it
-// needed, for a day while WASAT fell behind).
+// stillOn, measured, standing? }. eligible: it can be picked (a defense that needs help and can be
+// saved, the Major Order's defense on track, or a liberation being won within two weeks); value:
+// what makes one better within a tier (lower is better: the Helldivers a defense lacks, the hours a
+// liberation or the order's defense on track needs). stillOn: a pick on it holds (still fought and
+// moving: a defense on track because the blob came keeps the blob, until it is safe without half of
+// them; on 3 Oct 2026 a pick held GATRIA, on track with five times the pace it needed, for a day
+// while WASAT fell behind). The order's defense on track is a planet the order still needs (the
+// owner, 12 Oct 2026, after SENGE 23 got no pick while its hold task waited on it); while it still
+// needs its crowd, its standing as a held pick is that of a defense in need.
 function evaluateOrderPickBattles(battles, majorOrderPlanetIndexes, helldiversOnline, readingTimestamp) {
   return battles.map(({ planet, kind, samples }) => {
     const trend = calculatePlanetTrend(samples);
@@ -9964,6 +9978,12 @@ function evaluateOrderPickBattles(battles, majorOrderPlanetIndexes, helldiversOn
       if (outlook.verdict === 'on-track') {
         const stillNeedsTheCrowd = outlook.playersNeededToWinInTime !== null
           && outlook.playersNeededToWinInTime > ORDER_PICK_SAFE_SHARE * (planet.statistics?.playerCount || 0);
+        if (isMajorOrderPlanet) {
+          const hoursToHold = outlook.hoursToWin ?? outlook.hoursLeft ?? ETA_LONGEST_HOURS;
+          return { ...entry, tier: ORDER_PICK_TIER.majorOrderDefenseOnTrack, value: hoursToHold, eligible: true, stillOn: true,
+            standing: stillNeedsTheCrowd ? { tier: ORDER_PICK_TIER.majorOrderDefense, value: 0 }
+              : { tier: ORDER_PICK_TIER.majorOrderDefenseOnTrack, value: hoursToHold } };
+        }
         return { ...entry, value: 0, stillOn: stillNeedsTheCrowd };
       }
       if (outlook.verdict !== 'at-risk' && outlook.verdict !== 'losing') return entry;
@@ -9996,7 +10016,7 @@ function stepOrderPick(state, evaluated, readingTimestamp) {
     const current = evaluated.find(entry => entry.planetIndex === state.pick.planetIndex && entry.kind === state.pick.kind);
     if (current && current.stillOn) {
       const challenger = eligible.find(entry => entry.planetIndex !== current.planetIndex);
-      if (!challenger || !orderPickIsClearlyBetter(challenger, { tier: state.pick.tier, value: current.value ?? 0 })) {
+      if (!challenger || !orderPickIsClearlyBetter(challenger, current.standing ?? { tier: state.pick.tier, value: current.value ?? 0 })) {
         return { status: 'pick', pick: state.pick, closeCall: null };
       }
       return { status: 'pick', pick: { ...pickFrom(challenger), sinceTimestamp: readingTimestamp }, closeCall: null };
@@ -10084,7 +10104,10 @@ function describeOrderReason(pick, planet, nowTimestamp = Date.now()) {
     const outlook = describeDefenseOutlook(planet, trend, nowTimestamp);
     const where = `${formatPercent(outlook.progressPercent)} defended`
       + (outlook.hoursLeft !== null ? `, ${formatDuration(outlook.hoursLeft * 3600)} left` : '');
-    if (outlook.verdict === 'on-track') return `${prefix}${where}, on track now: stay until it is held.`;
+    if (outlook.verdict === 'on-track') {
+      return `${prefix}${where}, on track now` + (outlook.hoursToWin !== null
+        ? ` (held in about ${formatDuration(outlook.hoursToWin * 3600)} at this pace, an estimate)` : '') + ': stay until it is held.';
+    }
     const missing = outlook.playersNeededToWinInTime !== null
       ? outlook.playersNeededToWinInTime - (planet.statistics?.playerCount || 0) : null;
     return `${prefix}${where}, behind pace` + (missing > 0
